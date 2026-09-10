@@ -1,6 +1,7 @@
 import { NavLink, Route, Routes } from "react-router-dom";
 import Backtest from "./routes/Backtest";
 import Chart from "./routes/Chart";
+import Deploy from "./routes/Deploy";
 import StrategyBuilder from "./routes/StrategyBuilder";
 import Dashboard from "./routes/Dashboard";
 
@@ -26,6 +27,9 @@ export default function App() {
         <NavLink to="/backtest" className={navLinkClass}>
           Backtest
         </NavLink>
+        <NavLink to="/deploy" className={navLinkClass}>
+          Deploy
+        </NavLink>
       </nav>
 
       <Routes>
@@ -33,6 +37,7 @@ export default function App() {
         <Route path="/chart" element={<Chart />} />
         <Route path="/strategy-builder" element={<StrategyBuilder />} />
         <Route path="/backtest" element={<Backtest />} />
+        <Route path="/deploy" element={<Deploy />} />
       </Routes>
     </div>
   );

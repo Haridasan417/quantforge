@@ -8,6 +8,8 @@ from app.models.strategy import Strategy as StrategyModel
 from app.schemas.strategies import (
     ActivateStrategyRequest,
     ActivateStrategyResponse,
+    DeploymentInfo,
+    DeploymentsResponse,
     IndicatorField,
     SaveGraphStrategyRequest,
     StrategiesResponse,
@@ -189,4 +191,42 @@ async def activate_strategy(
         strategy_id=strategy_id,
         symbol=symbol,
         is_active=row.is_active,
+    )
+
+
+@router.get("/strategies/deployments", response_model=DeploymentsResponse)
+async def get_deployments(db: AsyncSession = Depends(get_db)) -> DeploymentsResponse:
+    """Every strategy row that's been turned into a deployment (`symbol`
+    set — see `POST /api/strategies/activate` above), active or paused.
+    This is what a "Deploy Strategy" UI lists and lets a user
+    pause/resume — the Trigger service itself only ever queries
+    `is_active=True` rows (`app/trigger_service/trigger.py`), but a
+    paused deployment is worth surfacing too so it can be resumed
+    without re-entering its config from scratch.
+    """
+    rows = (
+        (
+            await db.execute(
+                select(StrategyModel).where(StrategyModel.symbol.is_not(None)).order_by(StrategyModel.id.desc())
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return DeploymentsResponse(
+        deployments=[
+            DeploymentInfo(
+                deployment_id=row.id,
+                # Mirrors activate_strategy's own strategy_id convention: a
+                # graph row's `type` is always the literal "graph", so the
+                # registry name has to be rebuilt as "graph:<id>"; every
+                # other row's `type` already *is* the registry name (it was
+                # set to `strategy_id` verbatim when the row was created).
+                strategy_id=f"graph:{row.id}" if row.type == "graph" else row.type,
+                symbol=row.symbol,
+                is_active=row.is_active,
+                config=row.config,
+            )
+            for row in rows
+        ]
     )

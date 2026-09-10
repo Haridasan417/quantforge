@@ -61,3 +61,22 @@ class ActivateStrategyResponse(BaseModel):
     strategy_id: str
     symbol: str
     is_active: bool
+
+
+class DeploymentInfo(BaseModel):
+    """One `strategies` row that's been turned into a deployment (see
+    `ActivateStrategyRequest`) — active or paused. Mirrors
+    `ActivateStrategyResponse` plus the stored `config`, so a "Deploy
+    Strategy" UI can list existing deployments and re-post a toggle
+    (pause/resume) without the caller needing to already know or
+    re-enter that deployment's config."""
+
+    deployment_id: int
+    strategy_id: str
+    symbol: str
+    is_active: bool
+    config: dict[str, Any]
+
+
+class DeploymentsResponse(BaseModel):
+    deployments: list[DeploymentInfo]

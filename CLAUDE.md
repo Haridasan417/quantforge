@@ -304,6 +304,26 @@ this endpoint the Trigger service's query
 (`is_active=True AND symbol IS NOT NULL`) would have nothing to ever
 find.
 
+**Deploy Strategy UI (Phase 9 follow-up).** `POST /api/strategies/activate`
+had no frontend for its first two-and-a-half phases — deploying a
+strategy meant hitting it with `curl`. `GET /api/strategies/deployments`
+(new: returns every `strategies` row with `symbol` set, active or paused,
+alongside its `strategy_id`/`config` — same "rebuild `graph:<id>` for a
+graph row, use `type` verbatim otherwise" convention `activate_strategy`
+itself uses) plus `frontend/src/routes/Deploy.tsx` closes that gap: a
+form posts to `/activate` to deploy, and a table lists existing
+deployments with a Pause/Resume button per row. Toggling `is_active`
+re-sends that deployment's own stored `config` rather than omitting it —
+`activate_strategy`'s built-in branch replaces `config` with whatever the
+request body carries (`{}` if omitted), so leaving it out on a toggle
+would silently wipe a built-in's config (e.g. an `"rl"` deployment would
+lose its `checkpoint_name`). The same schema-driven config-field
+rendering `Backtest.tsx` already had for the `"rl"` strategy's
+`checkpoint_name` field was pulled out into a shared
+`components/StrategyConfigFields.tsx` so both pages render "one input per
+required config field" without either hard-coding which built-in needs
+one.
+
 **Trigger** (`app/trigger_service/trigger.py`): `is_market_open()`
 gates everything on NSE hours (9:15–15:30 IST, Mon–Fri, no holiday
 calendar yet). `run_trigger_once(db, force=False, client=None)` is the

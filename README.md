@@ -120,7 +120,7 @@ cp .env.example .env   # VITE_API_BASE_URL, defaults to http://localhost:8000
 npm run dev
 ```
 
-Opens the app with the Dashboard, Chart, Strategy Builder, and Backtest routes.
+Opens the app with the Dashboard, Chart, Strategy Builder, Backtest, and Deploy routes.
 
 ### Running the paper-trading pipeline locally
 
@@ -224,13 +224,16 @@ to be used end to end:
    (`ma_crossover`, `rsi_threshold`, `walk_forward`), against a date range.
    Shows Sharpe / max drawdown / win rate, the equity curve, and buy/sell
    markers on the price chart.
-4. **Paper-trading pipeline** — `POST /api/strategies/activate` turns a
-   strategy + symbol into a live deployment. During NSE hours, the
-   scheduled GitHub Action hits `/trigger/run-once`, the Executor evaluates
-   it, runs the signal through the Risk Manager, and (if approved) writes a
-   simulated fill at the live LTP. The **Dashboard** (`/`) shows it appear
-   live — P&L, the trade log, and the equity curve all update over the
-   open WebSocket with no manual refresh.
+4. **Paper-trading pipeline** — the **Deploy** page (`/deploy`) turns a
+   strategy + symbol into a live deployment (a thin form over `POST
+   /api/strategies/activate`, listing existing deployments from `GET
+   /api/strategies/deployments` with a Pause/Resume toggle for each).
+   During NSE hours, the scheduled GitHub Action hits `/trigger/run-once`,
+   the Executor evaluates it, runs the signal through the Risk Manager,
+   and (if approved) writes a simulated fill at the live LTP. The
+   **Dashboard** (`/`) shows it appear live — P&L, the trade log, and the
+   equity curve all update over the open WebSocket with no manual
+   refresh.
 5. **RL strategy** — same Backtest flow as step 3, but picking `rl` from the
    Strategy dropdown reveals a **Checkpoint Name** field (the Backtest form
    renders one input per required config field a strategy's schema

@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { ApiError, api } from "../api/client";
 import CandleChart from "../components/CandleChart";
 import MetricCard from "../components/MetricCard";
+import { StrategyConfigFields, missingRequiredField, requiredConfigFieldsFor } from "../components/StrategyConfigFields";
 import EquityCurveChart from "../components/backtest/EquityCurveChart";
 import type { BacktestResponse } from "../components/backtest/types";
 import type { StrategiesResponse, StrategyInfo } from "../components/strategy-builder/types";
@@ -15,24 +16,6 @@ function defaultDateRange(): { start: string; end: string } {
 
 function formatPercent(value: number): string {
   return `${(value * 100).toFixed(2)}%`;
-}
-
-// Loose shape of the JSON Schema `GET /api/strategies` returns per strategy
-// (backend/app/strategy_engine/*'s `config_schema()`) — just enough to
-// drive a config form generically, without hard-coding which built-in
-// needs what. Right now only RLConfig.checkpoint_name has no default (see
-// CLAUDE.md's "Follow-up fix" note under Phase 7 part B), so this ends up
-// rendering exactly one field for the "rl" strategy and nothing for every
-// other built-in — but it isn't special-cased to "rl": any future
-// built-in with a required config field gets a form field here for free.
-interface JsonSchemaProperty {
-  title?: string;
-  description?: string;
-}
-
-interface ConfigJsonSchema {
-  properties?: Record<string, JsonSchemaProperty>;
-  required?: string[];
 }
 
 export default function Backtest() {
@@ -64,13 +47,7 @@ export default function Backtest() {
   }, []);
 
   const selectedStrategy = strategies.find((s) => s.name === strategyId);
-  const configSchema = (selectedStrategy?.config_schema ?? {}) as ConfigJsonSchema;
-  // Only built-ins take a per-request config override at all (a saved
-  // graph's config lives on its own row — see resolve_strategy in
-  // backend/app/backtest_engine/resolve.py); required fields on a graph's
-  // schema describe its *saved* nodes/edges shape, not something to fill
-  // in here, so this stays empty for source === "graph".
-  const requiredConfigFields = selectedStrategy?.source === "builtin" ? configSchema.required ?? [] : [];
+  const requiredConfigFields = requiredConfigFieldsFor(selectedStrategy);
 
   // Reset any typed-in config values when the strategy selection changes,
   // so switching away from "rl" and back doesn't resubmit a stale value.
@@ -86,10 +63,9 @@ export default function Backtest() {
       return;
     }
 
-    const missingField = requiredConfigFields.find((field) => !configValues[field]?.trim());
-    if (missingField) {
-      const label = configSchema.properties?.[missingField]?.title ?? missingField;
-      setRunError(`${label} is required for this strategy.`);
+    const missingLabel = missingRequiredField(requiredConfigFields, configValues, selectedStrategy);
+    if (missingLabel) {
+      setRunError(`${missingLabel} is required for this strategy.`);
       return;
     }
 
@@ -195,24 +171,12 @@ export default function Backtest() {
           />
         </div>
 
-        {requiredConfigFields.map((field) => {
-          const schema = configSchema.properties?.[field];
-          return (
-            <div key={field}>
-              <label className="mb-1 block text-xs text-slate-400" htmlFor={`config-${field}`}>
-                {schema?.title ?? field}
-              </label>
-              <input
-                id={`config-${field}`}
-                value={configValues[field] ?? ""}
-                onChange={(e) => setConfigValues((prev) => ({ ...prev, [field]: e.target.value }))}
-                placeholder={schema?.description ?? field}
-                title={schema?.description}
-                className="w-56 rounded-md border border-slate-700 bg-slate-900 px-3 py-1.5 text-sm text-white"
-              />
-            </div>
-          );
-        })}
+        <StrategyConfigFields
+          strategy={selectedStrategy}
+          fields={requiredConfigFields}
+          values={configValues}
+          onChange={(field, value) => setConfigValues((prev) => ({ ...prev, [field]: value }))}
+        />
 
         <button
           type="submit"

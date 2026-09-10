@@ -55,3 +55,18 @@ export interface StrategyInfo {
 export interface StrategiesResponse {
   strategies: StrategyInfo[];
 }
+
+// Phase 9 follow-up: mirrors DeploymentInfo/DeploymentsResponse in
+// backend/app/schemas/strategies.py — a strategies row that's been
+// turned into a deployment via POST /api/strategies/activate.
+export interface DeploymentInfo {
+  deployment_id: number;
+  strategy_id: string;
+  symbol: string;
+  is_active: boolean;
+  config: Record<string, unknown>;
+}
+
+export interface DeploymentsResponse {
+  deployments: DeploymentInfo[];
+}
