@@ -60,6 +60,8 @@ function StrategyBuilderCanvas() {
   const [saveMessage, setSaveMessage] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [savedStrategies, setSavedStrategies] = useState<StrategyInfo[]>([]);
+  const [deletingName, setDeletingName] = useState<string | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
 
   // A plain counter, not state — node/edge ids just need to be unique
   // on this canvas, and bumping it shouldn't itself trigger a render.
@@ -185,6 +187,27 @@ function StrategyBuilderCanvas() {
     }
   }, [strategyName, nodes, edges, refreshSavedStrategies]);
 
+  const deleteStrategy = useCallback(
+    async (s: StrategyInfo) => {
+      const label = s.display_name ?? s.name;
+      if (!window.confirm(`Delete "${label}"? This can't be undone.`)) return;
+
+      setDeleteError(null);
+      setDeletingName(s.name);
+      try {
+        await api.del(`/api/strategies/${encodeURIComponent(s.name)}`);
+        await refreshSavedStrategies();
+      } catch (err) {
+        setDeleteError(
+          err instanceof ApiError ? err.message : "Failed to delete strategy",
+        );
+      } finally {
+        setDeletingName(null);
+      }
+    },
+    [refreshSavedStrategies],
+  );
+
   return (
     <div className="p-6">
       <h1 className="text-2xl font-semibold text-slate-100">Strategy Builder</h1>
@@ -277,11 +300,26 @@ function StrategyBuilderCanvas() {
       {savedStrategies.length > 0 && (
         <div className="mt-6">
           <h2 className="text-sm font-semibold text-slate-300">Saved visual strategies</h2>
+          {deleteError && (
+            <div className="mt-2 rounded-md border border-red-800 bg-red-950 px-3 py-2 text-sm text-red-300">
+              {deleteError}
+            </div>
+          )}
           <ul className="mt-2 space-y-1 text-sm text-slate-400">
             {savedStrategies.map((s) => (
-              <li key={s.name}>
-                <span className="text-slate-200">{s.display_name ?? s.name}</span>{" "}
-                <span className="text-xs text-slate-600">({s.name})</span> — {s.description}
+              <li key={s.name} className="flex items-center justify-between gap-2">
+                <span>
+                  <span className="text-slate-200">{s.display_name ?? s.name}</span>{" "}
+                  <span className="text-xs text-slate-600">({s.name})</span> — {s.description}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => deleteStrategy(s)}
+                  disabled={deletingName === s.name}
+                  className="shrink-0 rounded-md border border-red-900 px-2 py-1 text-xs font-medium text-red-300 hover:bg-red-950 disabled:opacity-50"
+                >
+                  {deletingName === s.name ? "Deleting…" : "Delete"}
+                </button>
               </li>
             ))}
           </ul>

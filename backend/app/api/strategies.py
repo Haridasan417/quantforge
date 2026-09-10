@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import ValidationError
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_db
@@ -26,6 +27,7 @@ from app.strategy_engine import (
     list_strategies,
     list_strategy_instances,
     register_strategy_instance,
+    unregister_strategy_instance,
 )
 
 router = APIRouter(prefix="/api", tags=["strategies"])
@@ -129,6 +131,51 @@ async def save_custom_strategy(
         config=config.model_dump(),
         display_name=row.name,
     )
+
+
+@router.delete("/strategies/{strategy_id}", status_code=204)
+async def delete_strategy(strategy_id: str, db: AsyncSession = Depends(get_db)) -> None:
+    """Delete a saved Strategy Builder graph.
+
+    Only `"graph:<id>"` strategies can be deleted this way — built-ins
+    aren't rows in the database at all, so there's nothing to delete;
+    a paused deployment of a built-in can just be left paused.
+
+    A graph that already has trades (it was deployed and generated
+    fills) or a live deployment can't be deleted outright: `Trade.strategy_id`
+    is a plain foreign key with no `ondelete=CASCADE`, so the database
+    itself refuses via `IntegrityError`. That's surfaced as a 409 telling
+    the user to pause the deployment instead, rather than as a raw 500.
+    """
+    if not strategy_id.startswith("graph:"):
+        raise HTTPException(
+            status_code=400,
+            detail="Only saved visual strategies (\"graph:<id>\") can be deleted.",
+        )
+
+    try:
+        row_id = int(strategy_id.split(":", 1)[1])
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=f"Malformed graph strategy id: {strategy_id!r}") from exc
+
+    row = await db.get(StrategyModel, row_id)
+    if row is None or row.type != "graph":
+        raise HTTPException(status_code=404, detail=f"Unknown strategy: {strategy_id!r}")
+
+    await db.delete(row)
+    try:
+        await db.commit()
+    except IntegrityError as exc:
+        await db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Cannot delete: this strategy has existing trades or a live deployment "
+                "referencing it. Pause it instead of deleting."
+            ),
+        ) from exc
+
+    unregister_strategy_instance(strategy_id)
 
 
 @router.post("/strategies/activate", response_model=ActivateStrategyResponse)

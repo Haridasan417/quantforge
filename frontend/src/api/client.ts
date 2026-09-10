@@ -51,6 +51,10 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     );
   }
 
+  // A 204 (e.g. DELETE /api/strategies/{id}) has no body — res.json()
+  // would throw on the empty string trying to parse it as JSON.
+  if (res.status === 204) return undefined as T;
+
   return res.json() as Promise<T>;
 }
 
@@ -58,6 +62,7 @@ export const api = {
   get: <T>(path: string) => request<T>(path),
   post: <T>(path: string, body?: unknown) =>
     request<T>(path, { method: "POST", body: body ? JSON.stringify(body) : undefined }),
+  del: <T = void>(path: string) => request<T>(path, { method: "DELETE" }),
 };
 
 // Wired up in Phase 1 against GET /api/candles.

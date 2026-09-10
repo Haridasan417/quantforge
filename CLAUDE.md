@@ -203,6 +203,22 @@ graph strategy by (backtest, activate, etc. all still send `"graph:<id>"`
 verbatim) — `display_name` is purely a label, rendered as `display_name ??
 name` everywhere a strategy's name is shown to a user.
 
+**Deleting a saved graph strategy.** `DELETE /api/strategies/{strategy_id}`
+only accepts a `"graph:<id>"` id — built-ins aren't rows at all, so
+there's nothing to delete, and a built-in's *deployment* (a `strategies`
+row with `symbol` set) is only ever paused/resumed via `POST
+/api/strategies/activate`, never deleted. `Trade.strategy_id` is a plain
+`ForeignKey("strategies.id")` with no `ondelete="CASCADE"`, so deleting a
+graph that already has trades against it (it was deployed and produced
+fills) raises `IntegrityError` at commit time — caught and turned into a
+409 telling the user to pause the deployment instead of deleting it,
+rather than a raw 500. On a successful delete, `unregister_strategy_instance`
+also drops the in-memory instance so a stale `"graph:<id>"` can't still be
+resolved for a backtest/deploy after its row is gone. The Strategy
+Builder's "Saved visual strategies" list has a Delete button per entry
+(`window.confirm` guard, since it's destructive) that calls this endpoint
+and then re-runs the same `refreshSavedStrategies()` the Save button uses.
+
 ## Backtesting Engine
 
 `backend/app/backtest_engine/`: runs any registered `Strategy` (a
