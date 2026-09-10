@@ -1,0 +1,7 @@
+# Training-only dependencies (Phase 7) -- NOT part of the backend
+# service's runtime requirements. Installed by ml/notebooks/train_rl_agent.ipynb
+# (Colab already ships a compatible torch; installing stable-baselines3
+# there does not force a reinstall) and here, for locally sanity-checking
+# the env with `cd ml && pytest`.
+gymnasium==1.0.0
+stable-baselines3==2.4.0

@@ -393,6 +393,91 @@ precision, which a fake session can't meaningfully verify. Async tests
 run via `pytest-asyncio` (`asyncio_mode = auto` in `pytest.ini`, added
 this phase).
 
+## Feature Engineering, Walk-Forward Strategy & RL Environment (Phase 7 part A)
+
+**One feature function, everywhere.** `app/strategy_engine/features.py`
+is the single implementation of "the model-facing state": `build_features(df)`
+turns raw OHLCV into five scale-free per-bar columns (`ret`, `high_low_range`,
+`rsi` rescaled to 0-1, `ema_dist`, `macd_hist` — each already a
+percent/ratio/bounded oscillator, so no separate normalization/scaler
+step, and nothing that needs fitting on training data and staying in
+sync with inference); `observation_at(features_df, index, window=FEATURE_WINDOW)`
+flattens `FEATURE_WINDOW` (20) trailing bars into one `OBSERVATION_SIZE`
+(100) vector, returning `None` — never zeros — when there isn't a full,
+fully-warmed-up window yet, so "no data" can never look like a real
+market state to a model. `build_observation(df)` is the convenience
+wrapper a per-bar caller (backtest/live inference) uses; `ml/envs/trading_env.py`
+calls `build_features`/`observation_at` directly instead, since an RL
+episode needs one observation per timestep and recomputing every
+indicator from scratch each step would be wasteful. `RLStrategy`
+(Phase 7 part B, once a checkpoint exists) will call `build_observation`
+too — same function, so train-time and serve-time state can't drift
+apart.
+
+**WalkForwardStrategy** (`app/strategy_engine/strategies/walk_forward.py`,
+registered as `"walk_forward"`) needs no GPU/training: it's an
+MA-crossover strategy whose `(fast, slow)` periods are re-derived on
+every call via a small grid search (`_best_params`/`_mechanical_return`)
+over `config.fast_candidates`/`slow_candidates`, scored on the
+`train_window` bars ending `test_window` bars *before* the live bar —
+so the fit is always evaluated on data it wasn't chosen using, and the
+gap (`test_window`) is what actually makes this "walk-forward" rather
+than just "in-sample-optimized". Once fit, it trades the winning pair's
+crossover on the current bar exactly like `MACrossoverStrategy` does.
+
+**RL Environment** (`ml/envs/trading_env.py`): `TradingEnv` wraps
+`features.py` in a `gymnasium.Env`, one episode per full pass through
+whatever OHLCV slice it's constructed with.
+- **Action space: `Discrete(3)` (HOLD/BUY/SELL), trained with DQN** —
+  chosen over a continuous position-delta + PPO because it mirrors the
+  project's existing `SignalAction` vocabulary and long/flat-only
+  position model (`PositionSide` has no short anywhere the Risk Manager
+  or Executor act on), so a trained policy's action maps straight onto
+  a `Signal` without a translation layer once Phase 7 part B builds
+  `RLStrategy`.
+- **Reward: risk-adjusted (Sharpe-shaped) return** — realized next-bar
+  return (the fill happens "now", the return is realized going into the
+  next bar) minus a transaction-cost penalty on position changes,
+  divided by a trailing realized-volatility estimate, so the policy is
+  rewarded for consistent risk-adjusted gains rather than raw
+  return-chasing.
+- **`chronological_split(df, train_frac, val_frac)`**: contiguous,
+  time-ordered train/val/test slices — never shuffled, since shuffling
+  a time series before a split leaks the future into training.
+- Verified with gymnasium's own `check_env` plus a full-episode rollout
+  and a transaction-cost regression test (`ml/tests/test_trading_env.py`,
+  run via `cd ml && pytest` — `ml/pytest.ini` puts both `ml/` and
+  `../backend` on `sys.path`, the same two directories the Colab
+  notebook adds).
+
+**Training notebook** (`ml/notebooks/train_rl_agent.ipynb`): git-clones
+this repo and adds `backend/`/`ml/` to `sys.path` rather than
+`pip install -e` — the repo isn't packaged (no `setup.py`/`pyproject.toml`,
+and doesn't need one for a project this size), so cloning + `sys.path`
+is the simpler of the two options the phase brief asked to choose
+between. It installs the *full* `backend/requirements.txt` (not a
+hand-curated subset) because merely importing `app.strategy_engine.features`
+transitively imports `app.data_service`'s package `__init__.py`, which
+pulls in sqlalchemy/yfinance/nsepy regardless — simplest to just match
+what the backend service itself installs rather than maintain a second,
+partial dependency list that could drift out of sync. Data comes from
+the backend's own `fetch_candles` (same yfinance/nsepy code
+`/api/candles` uses), split chronologically 70/15/15, trained with
+`stable_baselines3.DQN`, evaluated on val *and* held-out test via
+`evaluate_policy` plus a plain cumulative-return readout, then saved to
+Google Drive as a checkpoint `.zip` *plus* a JSON metadata sidecar
+(symbol, date range, timesteps, eval metrics) — per the free-tier note
+below, only that small metadata is meant to live long-term in the
+repo/DB; the binary stays in Drive (or Git LFS/a release asset if it
+ever needs to be committed).
+
+**Part A stops here, by design** (per the phase brief): the notebook
+must be run interactively in Colab (GPU/long-running training, a human
+watching the loss curve) — Claude Code cannot execute it from this
+session. Phase 7 part B (loading a downloaded checkpoint into a live
+`RLStrategy` for backtest/execution) is unblocked once a `.zip`/`.json`
+pair lands in `ml/checkpoints/`.
+
 ## Free-tier notes
 
 - Render's free web services sleep on idle — bad for a service that needs to poll continuously. Either run Trigger/Executor as a persistent loop on an Oracle Cloud Always-Free VM (`python -m app.trigger_service` / `python -m app.executor_service`), or replace the loop with a scheduled GitHub Action / external cron (e.g. cron-job.org) hitting `POST /trigger/run-once` — both modes are implemented as of Phase 6, see above.
@@ -409,6 +494,6 @@ this phase).
 - [x] 4 — Strategy Builder UI
 - [x] 5 — Backtesting Engine
 - [x] 6 — Risk Manager, Trigger & Executor
-- [ ] 7 — ML/RL strategy plugin
+- [ ] 7 — ML/RL strategy plugin (part A shipped: features.py, WalkForwardStrategy, TradingEnv, training notebook — see above; part B, `RLStrategy` wired to a trained checkpoint, is pending the checkpoint coming back from Colab)
 - [ ] 8 — Dashboard
 - [ ] 9 — Deployment & polish
