@@ -280,7 +280,8 @@ function StrategyBuilderCanvas() {
           <ul className="mt-2 space-y-1 text-sm text-slate-400">
             {savedStrategies.map((s) => (
               <li key={s.name}>
-                <span className="text-slate-200">{s.name}</span> — {s.description}
+                <span className="text-slate-200">{s.display_name ?? s.name}</span>{" "}
+                <span className="text-xs text-slate-600">({s.name})</span> — {s.description}
               </li>
             ))}
           </ul>

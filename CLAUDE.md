@@ -187,6 +187,22 @@ was extended to surface a FastAPI error body's `detail` as
 so this validation message reaches the Strategy Builder's error banner
 verbatim.
 
+**Bug fix: a saved graph's name never showed up anywhere.** The instance
+registry only ever knows a graph strategy by its `"graph:<id>"` key — the
+name a user types into "Strategy name" when saving is written to the
+`strategies` row (`SaveGraphStrategyRequest.name`) but was never attached
+to the runtime `GraphStrategy` instance or read back by `GET
+/api/strategies`, so every saved graph showed up everywhere (the
+Backtest/Deploy dropdowns, the Strategy Builder's own "Saved visual
+strategies" list) as the bare registry key — "graph:6", never the name
+the user actually gave it. Fixed by adding `StrategyInfo.display_name`
+(only set for `source="graph"` entries) and having `get_strategies` look
+the row up by id to populate it, alongside `save_custom_strategy`'s own
+response. `name` stays the stable registry key every request addresses a
+graph strategy by (backtest, activate, etc. all still send `"graph:<id>"`
+verbatim) — `display_name` is purely a label, rendered as `display_name ??
+name` everywhere a strategy's name is shown to a user.
+
 ## Backtesting Engine
 
 `backend/app/backtest_engine/`: runs any registered `Strategy` (a

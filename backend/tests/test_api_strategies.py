@@ -9,6 +9,7 @@ with the rest of this suite (no test here touches a live DB).
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from unittest.mock import MagicMock
 
 import pytest
 from fastapi.testclient import TestClient
@@ -20,10 +21,17 @@ from app.strategy_engine.registry import list_strategy_instances, unregister_str
 
 class _FakeSession:
     """Just enough of AsyncSession's surface for an endpoint that does
-    `db.add(row); await db.commit(); await db.refresh(row)` once."""
+    `db.add(row); await db.commit(); await db.refresh(row)` once, plus
+    `execute(select(...))` — GET /api/strategies looks up each saved
+    graph's row by id (to recover the user-given name for
+    `StrategyInfo.display_name`; see api/strategies.py). Since these
+    tests only ever save one graph at a time, `execute` just returns
+    every row seen so far rather than actually interpreting the
+    statement's WHERE clause."""
 
     def __init__(self) -> None:
         self._next_id = 1
+        self._rows: dict[int, object] = {}
 
     def add(self, obj) -> None:
         self._pending = obj
@@ -37,6 +45,12 @@ class _FakeSession:
             self._next_id += 1
         if getattr(obj, "created_at", None) is None:
             obj.created_at = datetime.now(timezone.utc)
+        self._rows[obj.id] = obj
+
+    async def execute(self, stmt):
+        result = MagicMock()
+        result.scalars.return_value.all.return_value = list(self._rows.values())
+        return result
 
 
 @pytest.fixture(autouse=True)
@@ -106,11 +120,20 @@ def test_save_custom_strategy_then_lists_it(client: TestClient) -> None:
     assert body["name"] == "graph:1"
     assert body["source"] == "graph"
     assert body["config"]["nodes"][0]["id"] == "c_above"
+    # The save response's display_name is what the user actually typed,
+    # not the registry key — regression coverage for a bug where the
+    # Strategy Builder's "Strategy name" field appeared to do nothing:
+    # it was saved to the DB but never surfaced back anywhere in the UI.
+    assert body["display_name"] == "My AND strategy"
 
     listing = client.get("/api/strategies").json()["strategies"]
     graph_entries = [item for item in listing if item["source"] == "graph"]
     assert len(graph_entries) == 1
     assert graph_entries[0]["name"] == "graph:1"
+    # GET /api/strategies (not just the save response) must also carry the
+    # user-given name — this is what the Backtest/Deploy dropdowns and the
+    # Strategy Builder's "Saved visual strategies" list actually render.
+    assert graph_entries[0]["display_name"] == "My AND strategy"
 
 
 def test_save_custom_strategy_rejects_malformed_graph(client: TestClient) -> None:

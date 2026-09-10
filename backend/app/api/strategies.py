@@ -32,7 +32,7 @@ router = APIRouter(prefix="/api", tags=["strategies"])
 
 
 @router.get("/strategies", response_model=StrategiesResponse)
-async def get_strategies() -> StrategiesResponse:
+async def get_strategies(db: AsyncSession = Depends(get_db)) -> StrategiesResponse:
     """Every registered strategy — built-in classes and saved Strategy
     Builder graphs alike — plus its config as JSON Schema. The Strategy
     Builder (Phase 4) and, later, the backtest/execution config forms
@@ -47,6 +47,22 @@ async def get_strategies() -> StrategiesResponse:
         )
         for name, cls in sorted(list_strategies().items())
     ]
+
+    # The in-memory instance registry only knows a graph strategy by its
+    # "graph:<id>" key (see GraphStrategy/register_strategy_instance) — it
+    # never carries the name the user actually typed into the Strategy
+    # Builder's "Strategy name" field when saving. That name only lives on
+    # the `strategies` row itself, so it has to be looked up here rather
+    # than read off the instance; without this, every saved graph showed
+    # up everywhere (this list, the Backtest/Deploy dropdowns) as the bare
+    # "graph:<id>" registry key with no way to tell two saved graphs apart
+    # by name.
+    graph_ids = [int(name.split(":", 1)[1]) for name in list_strategy_instances() if name.startswith("graph:")]
+    saved_names: dict[int, str] = {}
+    if graph_ids:
+        rows = (await db.execute(select(StrategyModel).where(StrategyModel.id.in_(graph_ids)))).scalars().all()
+        saved_names = {row.id: row.name for row in rows}
+
     infos += [
         StrategyInfo(
             name=name,
@@ -54,6 +70,7 @@ async def get_strategies() -> StrategiesResponse:
             source="graph",
             config_schema=type(instance).config_schema().model_json_schema(),
             config=instance.config.model_dump(),
+            display_name=saved_names.get(int(name.split(":", 1)[1])),
         )
         for name, instance in sorted(list_strategy_instances().items())
     ]
@@ -110,6 +127,7 @@ async def save_custom_strategy(
         source="graph",
         config_schema=GraphStrategy.config_schema().model_json_schema(),
         config=config.model_dump(),
+        display_name=row.name,
     )
 
 

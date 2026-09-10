@@ -126,7 +126,7 @@ export default function Backtest() {
             {strategies.length === 0 && <option value="">No strategies available</option>}
             {strategies.map((s) => (
               <option key={s.name} value={s.name}>
-                {s.name} {s.source === "graph" ? "(visual)" : ""}
+                {s.display_name ?? s.name} {s.source === "graph" ? "(visual)" : ""}
               </option>
             ))}
           </select>

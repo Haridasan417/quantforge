@@ -45,11 +45,17 @@ export interface ActionData extends ActionFields {
 }
 
 export interface StrategyInfo {
-  name: string;
+  name: string; // registry name: a built-in's class name, or "graph:<id>"
   description: string;
   source: "builtin" | "graph";
   config_schema: Record<string, unknown>;
   config?: { nodes: unknown[]; edges: unknown[] } | null;
+  // The name the user gave this strategy when saving it in the Strategy
+  // Builder — only set for "graph" entries. `name` stays the stable
+  // registry key every request addresses the strategy by, so render
+  // `display_name ?? name` wherever a strategy's label is shown, but
+  // still send `name` in any request.
+  display_name?: string | null;
 }
 
 export interface StrategiesResponse {

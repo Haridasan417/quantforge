@@ -4,7 +4,7 @@ from pydantic import BaseModel, Field
 
 
 class StrategyInfo(BaseModel):
-    name: str
+    name: str  # registry name: a built-in's class name, or "graph:<id>"
     description: str
     source: str  # "builtin" (registered class) | "graph" (saved Strategy Builder graph)
     config_schema: dict[str, Any]
@@ -12,6 +12,15 @@ class StrategyInfo(BaseModel):
     # since a "builtin" entry describes a class (many possible configs),
     # not one instance. Lets the builder UI reload a saved graph.
     config: dict[str, Any] | None = None
+    # The name the user gave this strategy when saving it in the Strategy
+    # Builder (SaveGraphStrategyRequest.name) — only set for "graph"
+    # entries; a built-in has no such user-chosen name. `name` above has
+    # to stay the stable "graph:<id>" registry key (backtest/activate/etc.
+    # all address a graph strategy by it), so this is a separate field
+    # rather than replacing `name` outright — the frontend shows
+    # `display_name ?? name` wherever a strategy's label appears, but
+    # still sends `name` in any request.
+    display_name: str | None = None
 
 
 class StrategiesResponse(BaseModel):
