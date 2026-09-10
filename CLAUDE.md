@@ -86,6 +86,21 @@ for the ORM models, so this doesn't pull in a second datastore a phase early
 — Redis/Upstash arrives in Phase 6 for the Trigger→Executor queue, which is
 what it's actually needed for.
 
+**Bug fix: a request spanning "today" crashed the candle cache insert.**
+A daily-interval request whose range runs up to now includes today's
+still-forming bar. yfinance reports that row with real open/high/low/volume
+but `NaN` for `close` (the session hasn't closed yet) rather than omitting
+it. `_df_to_payload` (`app/data_service/cache.py`) turned that straight into
+a JSON payload, and `float('nan')` renders as the bare token `NaN` — valid
+Python, not valid JSON — which Postgres's JSONB parser rejects outright at
+insert time (`invalid input syntax for type json ... Token "NaN" is
+invalid`), 500-ing every `/api/candles` call for a symbol whose range
+included today. Fixed in `app/data_service/sources.py`'s `_standardize`:
+any row with a NaN in one of its present OHLCV columns is dropped before
+the DataFrame ever reaches the cache, since a candle missing a real price
+is unusable for charting/indicators/backtesting anyway — simpler than
+threading a JSON-null through every downstream consumer.
+
 ## Charting ("live" for now)
 
 The Chart route and Dashboard's default view both render `CandleChart`
@@ -202,6 +217,22 @@ response. `name` stays the stable registry key every request addresses a
 graph strategy by (backtest, activate, etc. all still send `"graph:<id>"`
 verbatim) — `display_name` is purely a label, rendered as `display_name ??
 name` everywhere a strategy's name is shown to a user.
+
+**Deleting a saved graph strategy.** `DELETE /api/strategies/{strategy_id}`
+only accepts a `"graph:<id>"` id — built-ins aren't rows at all, so
+there's nothing to delete, and a built-in's *deployment* (a `strategies`
+row with `symbol` set) is only ever paused/resumed via `POST
+/api/strategies/activate`, never deleted. `Trade.strategy_id` is a plain
+`ForeignKey("strategies.id")` with no `ondelete="CASCADE"`, so deleting a
+graph that already has trades against it (it was deployed and produced
+fills) raises `IntegrityError` at commit time — caught and turned into a
+409 telling the user to pause the deployment instead of deleting it,
+rather than a raw 500. On a successful delete, `unregister_strategy_instance`
+also drops the in-memory instance so a stale `"graph:<id>"` can't still be
+resolved for a backtest/deploy after its row is gone. The Strategy
+Builder's "Saved visual strategies" list has a Delete button per entry
+(`window.confirm` guard, since it's destructive) that calls this endpoint
+and then re-runs the same `refreshSavedStrategies()` the Save button uses.
 
 ## Backtesting Engine
 

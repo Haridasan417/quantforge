@@ -46,7 +46,23 @@ def _localize_to_utc(index: pd.DatetimeIndex, *, assume_tz: str) -> pd.DatetimeI
 
 def _standardize(df: pd.DataFrame, *, assume_tz: str) -> pd.DataFrame:
     df = df.rename(columns=str.lower)
-    df = df[[c for c in OHLCV_COLUMNS if c in df.columns]]
+    cols_present = [c for c in OHLCV_COLUMNS if c in df.columns]
+    df = df[cols_present]
+
+    # The most recent bar of a request that runs up to "now" is often
+    # still forming (today's session hasn't closed yet) -- yfinance
+    # reports whatever OHLC it has so far and NaN for the rest (typically
+    # `close`), rather than omitting the row. That NaN survives pandas
+    # untouched, then json.dumps renders it as the bare token `NaN` (valid
+    # Python, not valid JSON), which Postgres's JSONB parser rejects
+    # outright when app/data_service/cache.py caches this DataFrame --
+    # "invalid input syntax for type json ... Token 'NaN' is invalid."
+    # A candle missing a real price is unusable for charting, indicators,
+    # or backtesting anyway, so it's dropped here rather than trying to
+    # carry a null through every downstream consumer.
+    if cols_present:
+        df = df.dropna(subset=cols_present)
+
     df.index = _localize_to_utc(pd.DatetimeIndex(df.index), assume_tz=assume_tz)
     df.index.name = "ts"
     return df.sort_index()

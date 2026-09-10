@@ -121,3 +121,23 @@ def test_fetch_candles_raises_when_yfinance_errors_outright(mock_ticker_cls: Mag
 
     with pytest.raises(DataUnavailableError):
         fetch_candles("AAPL", "1d", START, END)
+
+
+@patch("app.data_service.sources.yf.Ticker")
+def test_fetch_candles_drops_a_still_forming_bar_with_a_nan_price(mock_ticker_cls: MagicMock) -> None:
+    # Regression coverage: yfinance reports today's not-yet-closed daily
+    # bar with a real open/high/low/volume but NaN close, rather than
+    # omitting the row. That NaN used to survive all the way into the
+    # candle_cache JSONB insert as the literal (invalid-JSON) token `NaN`,
+    # crashing every /api/candles request with a live "today" bar in
+    # range -- see sqlalchemy.exc.DBAPIError: "invalid input syntax for
+    # type json ... Token 'NaN' is invalid."
+    frame = _yfinance_frame()
+    frame.loc[frame.index[-1], "Close"] = float("nan")
+    mock_ticker_cls.return_value.history.return_value = frame
+
+    df = fetch_candles("AAPL", "1d", START, END)
+
+    assert len(df) == 1
+    assert df["close"].tolist() == [101.0]
+    assert not df.isna().any().any()
