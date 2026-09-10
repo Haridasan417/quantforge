@@ -38,3 +38,26 @@ class GraphPayload(BaseModel):
 class SaveGraphStrategyRequest(BaseModel):
     name: str = Field(min_length=1, max_length=255)
     graph: GraphPayload
+
+
+class ActivateStrategyRequest(BaseModel):
+    """Deploys `strategy_id` (a registry name — a built-in like
+    "ma_crossover" or a saved graph's "graph:<id>") on `symbol`, making
+    it visible to the Trigger service's poll. `is_active=False` deploys
+    it in a paused state (or pauses an already-deployed one) without
+    losing its saved config/symbol."""
+
+    strategy_id: str = Field(min_length=1)
+    symbol: str = Field(min_length=1, max_length=32)
+    is_active: bool = True
+    # Only used for built-ins (a graph's config already lives on its
+    # saved row) — validated against that strategy's config_schema, and
+    # replaces any config from a previous activation of this deployment.
+    config: dict[str, Any] | None = None
+
+
+class ActivateStrategyResponse(BaseModel):
+    deployment_id: int  # the `strategies.id` row Trade.strategy_id will reference
+    strategy_id: str
+    symbol: str
+    is_active: bool
