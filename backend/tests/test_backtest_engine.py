@@ -150,6 +150,29 @@ def test_resolve_strategy_builtin_returns_a_fresh_instance() -> None:
     assert isinstance(strategy, MACrossoverStrategy)
 
 
+def test_resolve_strategy_builtin_default_config_when_none_passed() -> None:
+    strategy = resolve_strategy("ma_crossover")
+    assert strategy.config == MACrossoverConfig()
+
+
+def test_resolve_strategy_builtin_applies_passed_config() -> None:
+    # Phase 7 part B: config is now threaded through to the built-in's
+    # constructor (previously always default-only — see this module's
+    # docstring) -- RLStrategy's checkpoint_name needs this, but any
+    # built-in's params can be overridden per-request this way.
+    strategy = resolve_strategy("ma_crossover", {"fast_period": 3, "slow_period": 9})
+    assert isinstance(strategy, MACrossoverStrategy)
+    assert strategy.config.fast_period == 3
+    assert strategy.config.slow_period == 9
+
+
+def test_resolve_strategy_builtin_invalid_config_raises_validation_error() -> None:
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        resolve_strategy("ma_crossover", {"fast_period": 30, "slow_period": 10})  # fast must be < slow
+
+
 def test_resolve_strategy_graph_instance_returns_the_registered_object() -> None:
     instance = GraphStrategy(
         GraphStrategyConfig(

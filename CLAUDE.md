@@ -223,12 +223,14 @@ through as `null` rather than coerced to `0.0` — "never traded" and "a
 real Sharpe of zero" are different things and the frontend can tell
 them apart.
 
-`resolve.py`'s `resolve_strategy(strategy_id)` is the one place that
-knows built-ins (instantiated fresh with default config — no per-request
-config override yet) and saved graphs (already-configured instances
-from the Phase 4 instance registry) need different lookups; backtest
-and, later, execution (Phase 6) both call this instead of duplicating
-the built-in-vs-graph branch.
+`resolve.py`'s `resolve_strategy(strategy_id, config=None)` is the one
+place that knows built-ins (instantiated fresh, with `config` validated
+against that class's `config_schema()` — see Phase 7 part B below for
+why a per-request override was added) and saved graphs
+(already-configured instances from the Phase 4 instance registry, where
+`config` is ignored — a graph's config lives on its own saved row) need
+different lookups; backtest and, later, execution (Phase 6) both call
+this instead of duplicating the built-in-vs-graph branch.
 
 `POST /api/backtest` (`api/backtest.py`) fetches OHLCV through the same
 `get_candles_cached` path `/api/candles` uses (so a symbol/range a user
@@ -549,6 +551,24 @@ aware signal gating (BUY-while-long, SELL-while-flat, HOLD) is tested
 by monkeypatching the *loaded* model's `.predict` to force a specific
 action, isolating the gating logic from what the tiny (untrained-to-any-
 real-skill) policy actually happens to output.
+
+**Follow-up fix: per-request config in `/api/backtest`.** Manually
+exercising `RLStrategy` through `POST /api/backtest` after landing the
+above surfaced a real gap: `backtest_engine/resolve.py`'s
+`resolve_strategy` instantiated every built-in with `cls()` — no
+config — because every built-in before this one had sane defaults for
+every field. `RLConfig.checkpoint_name` doesn't (there's no sensible
+default for "which checkpoint to run"), so backtesting `"rl"` with no
+override raised a `pydantic.ValidationError` `resolve_strategy` had no
+way to be given a value to avoid. Fixed by threading an optional
+`config: dict | None` through `resolve_strategy` → `BacktestRequest`
+(new field) → `POST /api/backtest`, and catching `ValidationError` in
+the endpoint as a 422 (a bad per-request config is a client error, not
+a server crash) — same pattern `POST /api/strategies/activate` already
+used for its own built-in config validation. This generalizes past
+RLStrategy: any built-in's params can now be overridden per backtest
+request, not just at `/activate` time. `resolve_strategy` ignores
+`config` for a saved graph (`"graph:<id>"`), unchanged.
 
 ## Free-tier notes
 

@@ -1,6 +1,7 @@
 import asyncio
 
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.backtest_engine import BacktestError, resolve_strategy, run_backtest
@@ -23,9 +24,13 @@ async def run_backtest_endpoint(
     date range, so it runs in a worker thread rather than blocking the
     event loop."""
     try:
-        strategy = resolve_strategy(payload.strategy_id)
+        strategy = resolve_strategy(payload.strategy_id, payload.config)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValidationError as exc:
+        # e.g. RLStrategy with no/invalid `checkpoint_name` -- a bad
+        # per-request config is a client error, not a server crash.
+        raise HTTPException(status_code=422, detail=f"Invalid config for {payload.strategy_id!r}: {exc}") from exc
 
     try:
         df = await get_candles_cached(db, payload.symbol, payload.interval, payload.start, payload.end)

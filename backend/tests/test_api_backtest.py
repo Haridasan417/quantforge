@@ -129,3 +129,33 @@ def test_post_backtest_too_short_range_is_422(client: TestClient, monkeypatch: p
 
     response = client.post("/api/backtest", json=_request_body())
     assert response.status_code == 422
+
+
+def test_post_backtest_applies_a_config_override(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Phase 7 part B: `config` is now threaded through to the resolved
+    # built-in (see backtest_engine/resolve.py) -- this is what lets
+    # RLStrategy's required `checkpoint_name` be specified per request.
+    # Exercised here with ma_crossover (no heavy stable-baselines3
+    # dependency needed) since it's purely a wiring/shape check.
+    async def fake_get_candles_cached(db, symbol, interval, start, end):
+        return _synthetic_df(_RSI_CLOSES)
+
+    monkeypatch.setattr("app.api.backtest.get_candles_cached", fake_get_candles_cached)
+
+    body = _request_body(strategy_id="ma_crossover")
+    body["config"] = {"fast_period": 3, "slow_period": 9}
+    response = client.post("/api/backtest", json=body)
+    assert response.status_code == 200
+
+
+def test_post_backtest_invalid_config_is_422_not_500(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    # RLStrategy's checkpoint_name has no default -- requesting it with
+    # no config must be a clean 422 (a bad request), never an unhandled
+    # 500 from a pydantic ValidationError escaping resolve_strategy.
+    async def fake_get_candles_cached(db, symbol, interval, start, end):
+        return _synthetic_df(_RSI_CLOSES)
+
+    monkeypatch.setattr("app.api.backtest.get_candles_cached", fake_get_candles_cached)
+
+    response = client.post("/api/backtest", json=_request_body(strategy_id="rl"))
+    assert response.status_code == 422
