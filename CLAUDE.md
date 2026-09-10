@@ -57,6 +57,7 @@ cd frontend && npm run dev                         # run UI
 - Commits: Conventional Commits (`feat:`, `fix:`, `chore:`, `docs:`, `test:`). Push to `main` at the end of each phase.
 - Secrets are never committed. `.env.example` documents every variable; real values live in `.env` (gitignored) or the deploy platform's secret store.
 - Trigger/Executor only act during NSE hours (9:15–15:30 IST, Mon–Fri) — check this before polling, not just before a fill.
+- The API and the frontend run on different origins in dev (Vite on 5173, uvicorn on 8000), so `CORSMiddleware` is configured from `CORS_ORIGINS` in `app/config.py` — add the deployed frontend URL there in Phase 9.
 
 ## Paper trading
 
@@ -84,6 +85,17 @@ for the ORM models, so this doesn't pull in a second datastore a phase early
 — Redis/Upstash arrives in Phase 6 for the Trigger→Executor queue, which is
 what it's actually needed for.
 
+## Charting ("live" for now)
+
+The Chart route and Dashboard's default view both render `CandleChart`
+(`frontend/src/components/CandleChart.tsx`): a `lightweight-charts` v5 chart
+with three panes — price candlesticks + EMA overlay (pane 0), RSI (pane 1),
+MACD histogram/line/signal (pane 2) — fed by `GET /api/candles`. "Live"
+currently means polling that endpoint on a timer (`POLL_INTERVAL_MS`, 15s);
+this gets replaced by a real push once the Trigger/Executor pipeline (Phase
+6) and the Dashboard's WebSocket (Phase 8) exist — search for `POLL_INTERVAL_MS`
+when that phase lands.
+
 ## Free-tier notes
 
 - Render's free web services sleep on idle — bad for a service that needs to poll continuously. Either run Trigger/Executor as a persistent loop on an Oracle Cloud Always-Free VM, or replace the loop with a scheduled GitHub Action / external cron (e.g. cron-job.org) hitting a `/trigger/run-once` endpoint.
@@ -95,7 +107,7 @@ what it's actually needed for.
 
 - [x] 0 — Repo, environment & scaffolding
 - [x] 1 — Backend core + Data Service
-- [ ] 2 — Frontend chart
+- [x] 2 — Frontend chart
 - [ ] 3 — Strategy Engine core
 - [ ] 4 — Strategy Builder UI
 - [ ] 5 — Backtesting Engine

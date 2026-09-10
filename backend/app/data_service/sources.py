@@ -6,10 +6,13 @@ with the network mocked out.
 """
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 
 import pandas as pd
 import yfinance as yf
+
+logger = logging.getLogger(__name__)
 
 OHLCV_COLUMNS = ["open", "high", "low", "close", "volume"]
 
@@ -82,6 +85,11 @@ def fetch_candles(symbol: str, interval: str, start: datetime, end: datetime) ->
     try:
         df = _fetch_from_yfinance(symbol, interval, start, end)
     except Exception:
+        # Swallowed on purpose (the nsepy fallback below may still save
+        # the request) but logged, not silenced — a bare "no data" 404
+        # with no trace of *why* is exactly the failure mode that made an
+        # actual Yahoo-side outage look like a bug in this function.
+        logger.warning("yfinance fetch failed for symbol=%r interval=%r", symbol, interval, exc_info=True)
         df = pd.DataFrame()
 
     if not df.empty:
@@ -91,6 +99,7 @@ def fetch_candles(symbol: str, interval: str, start: datetime, end: datetime) ->
         try:
             df = _fetch_from_nsepy(symbol, start, end)
         except Exception as exc:
+            logger.warning("nsepy fallback failed for symbol=%r", symbol, exc_info=True)
             raise DataUnavailableError(
                 f"yfinance returned no data for {symbol!r} and the nsepy fallback failed: {exc}"
             ) from exc

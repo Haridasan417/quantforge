@@ -11,6 +11,6 @@ python-dotenv==1.0.1
 # pandas-ta 0.4.x requires Python 3.12+ (see CLAUDE.md note on backend Python version)
 pandas==2.3.2
 numpy==2.2.6
-yfinance==0.2.50
+yfinance==1.7.0
 nsepy==0.8
 pandas-ta==0.4.71b0
