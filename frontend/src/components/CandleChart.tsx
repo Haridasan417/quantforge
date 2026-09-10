@@ -5,17 +5,45 @@ import {
   HistogramSeries,
   LineSeries,
   createChart,
+  createSeriesMarkers,
   type CandlestickData,
   type IChartApi,
   type ISeriesApi,
+  type ISeriesMarkersPluginApi,
   type LineData,
   type HistogramData,
+  type SeriesMarker,
+  type Time,
   type UTCTimestamp,
 } from "lightweight-charts";
 import { api } from "../api/client";
 
 const INTERVALS = ["1d", "1h", "15m"] as const;
 type Interval = (typeof INTERVALS)[number];
+
+// A buy/sell fill to plot on the price series — shaped to match
+// backend/app/schemas/backtest.py's TradeMarker, so a backtest result's
+// `trades` array can be passed straight through as `markers`.
+export interface TradeMarkerInput {
+  ts: string;
+  side: "BUY" | "SELL";
+  price: number;
+  qty: number;
+}
+
+interface CandleChartProps {
+  // Trade fills from a completed backtest run, plotted as arrows on the
+  // candle series. Omitted entirely for the plain live/historical
+  // Chart and Dashboard views (Phase 2).
+  markers?: TradeMarkerInput[];
+  initialSymbol?: string;
+  initialInterval?: Interval;
+  // A fixed historical window (a completed backtest's own start/end)
+  // instead of "now minus rangeFor(interval)" — also switches off the
+  // live polling loop, since re-polling "now" makes no sense while
+  // looking at one specific backtest run's fixed date range.
+  fixedRange?: { start: string; end: string };
+}
 
 // "Live" means refetch-on-a-timer for now. The Trigger/Executor pipeline
 // (Phase 6) is what eventually pushes real updates over a WebSocket
@@ -64,10 +92,10 @@ function toUTCTimestamp(iso: string): UTCTimestamp {
   return Math.floor(new Date(iso).getTime() / 1000) as UTCTimestamp;
 }
 
-export default function CandleChart() {
-  const [symbolInput, setSymbolInput] = useState("RELIANCE.NS");
-  const [symbol, setSymbol] = useState("RELIANCE.NS");
-  const [interval, setInterval_] = useState<Interval>("1d");
+export default function CandleChart({ markers, initialSymbol, initialInterval, fixedRange }: CandleChartProps = {}) {
+  const [symbolInput, setSymbolInput] = useState(initialSymbol ?? "RELIANCE.NS");
+  const [symbol, setSymbol] = useState(initialSymbol ?? "RELIANCE.NS");
+  const [interval, setInterval_] = useState<Interval>(initialInterval ?? "1d");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
@@ -80,6 +108,7 @@ export default function CandleChart() {
   const macdHistRef = useRef<ISeriesApi<"Histogram"> | null>(null);
   const macdLineRef = useRef<ISeriesApi<"Line"> | null>(null);
   const macdSignalRef = useRef<ISeriesApi<"Line"> | null>(null);
+  const seriesMarkersRef = useRef<ISeriesMarkersPluginApi<Time> | null>(null);
 
   // Build the chart + its three panes once. Data is pushed into the
   // series by the fetch effect below, not recreated on every poll.
@@ -118,6 +147,7 @@ export default function CandleChart() {
       { color: "#f59e0b", lineWidth: 2, priceLineVisible: false, lastValueVisible: false },
       0,
     );
+    seriesMarkersRef.current = createSeriesMarkers(candleSeriesRef.current, []);
 
     // Pane 1: RSI
     rsiSeriesRef.current = chart.addSeries(
@@ -147,6 +177,7 @@ export default function CandleChart() {
     return () => {
       chart.remove();
       chartRef.current = null;
+      seriesMarkersRef.current = null;
     };
   }, []);
 
@@ -154,7 +185,7 @@ export default function CandleChart() {
     setLoading(true);
     setError(null);
     try {
-      const { start, end } = rangeFor(interval);
+      const { start, end } = fixedRange ?? rangeFor(interval);
       const qs = new URLSearchParams({
         symbol,
         interval,
@@ -200,13 +231,33 @@ export default function CandleChart() {
     } finally {
       setLoading(false);
     }
-  }, [symbol, interval]);
+  }, [symbol, interval, fixedRange]);
 
   useEffect(() => {
     fetchData();
+    // A fixedRange means "show this one historical window" (a completed
+    // backtest run) rather than "keep this live" — re-polling "now" on
+    // a timer would be pointless (and misleading) there.
+    if (fixedRange) return;
     const id = window.setInterval(fetchData, POLL_INTERVAL_MS);
     return () => window.clearInterval(id);
-  }, [fetchData]);
+  }, [fetchData, fixedRange]);
+
+  // Buy/sell markers from a backtest run, applied whenever they (or the
+  // underlying candle data) change.
+  useEffect(() => {
+    if (!seriesMarkersRef.current) return;
+    const converted: SeriesMarker<Time>[] = (markers ?? [])
+      .map((m) => ({
+        time: toUTCTimestamp(m.ts),
+        position: (m.side === "BUY" ? "belowBar" : "aboveBar") as "belowBar" | "aboveBar",
+        color: m.side === "BUY" ? "#22c55e" : "#ef4444",
+        shape: (m.side === "BUY" ? "arrowUp" : "arrowDown") as "arrowUp" | "arrowDown",
+        text: m.side,
+      }))
+      .sort((a, b) => a.time - b.time);
+    seriesMarkersRef.current.setMarkers(converted);
+  }, [markers]);
 
   return (
     <div className="p-6">

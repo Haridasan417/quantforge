@@ -186,6 +186,74 @@ was extended to surface a FastAPI error body's `detail` as
 so this validation message reaches the Strategy Builder's error banner
 verbatim.
 
+## Backtesting Engine
+
+`backend/app/backtest_engine/`: runs any registered `Strategy` (a
+built-in class or a saved `graph:<id>` — resolved the same way for
+both, see below) through `backtrader` over historical OHLCV, and
+reduces the result to the metrics/series `POST /api/backtest` returns.
+
+`bridge.py`'s `StrategyBridge(bt.Strategy)` is the thin adapter the
+phase brief called for: backtrader owns bar iteration, order
+execution, and cash/position bookkeeping; every bar, it hands
+`strategy.generate_signal` the exact OHLCV slice seen so far
+(`full_df.iloc[:len(self)]` — can't include a future row by
+construction, since `len(self)` is backtrader's own running bar count)
+and places a `buy()`/`close()` based on the returned `Signal`, mirroring
+every strategy's own already-established convention (BUY only when not
+long, SELL/close only when long). Its `params` tuple names the strategy
+instance `qf_strategy`, not `strategy` — backtrader's own
+`Cerebro.addstrategy(strategy, *args, **kwargs)` already has a
+positional parameter called `strategy`, and the collision isn't
+obvious until you hit "got multiple values for argument 'strategy'".
+
+`runner.py`'s `run_backtest(strategy, df)` sets up `Cerebro` with fixed,
+documented defaults (₹100,000 starting cash, 0.1% commission per fill,
+`PercentSizer` at 95% of cash per BUY, whole-share sizing via
+`retint=True`) rather than exposing a pile of new tunable parameters —
+this phase runs a strategy "as-is" over history, it isn't a portfolio
+simulator with its own config surface. Sharpe (`bt.analyzers.SharpeRatio`,
+annualized), max drawdown (`bt.analyzers.DrawDown`, returned as a
+fraction of equity, not a percentage), and win rate (closed-trade
+won/total from `bt.analyzers.TradeAnalyzer`, `0.0` rather than a
+division error when nothing's closed yet) are read from backtrader's
+own analyzers rather than recomputed by hand. A strategy that never
+trades makes Sharpe `None` (zero-variance returns), which is passed
+through as `null` rather than coerced to `0.0` — "never traded" and "a
+real Sharpe of zero" are different things and the frontend can tell
+them apart.
+
+`resolve.py`'s `resolve_strategy(strategy_id)` is the one place that
+knows built-ins (instantiated fresh with default config — no per-request
+config override yet) and saved graphs (already-configured instances
+from the Phase 4 instance registry) need different lookups; backtest
+and, later, execution (Phase 6) both call this instead of duplicating
+the built-in-vs-graph branch.
+
+`POST /api/backtest` (`api/backtest.py`) fetches OHLCV through the same
+`get_candles_cached` path `/api/candles` uses (so a symbol/range a user
+already charted is already warm in the cache), then runs
+`run_backtest` — synchronous and CPU-bound, since backtrader has no
+async API — via `asyncio.to_thread` so a long backtest doesn't block
+the event loop out from under other requests. The request body adds an
+optional `interval` (default `"1d"`) beyond the phase brief's literal
+`{strategy_id, symbol, start, end}` — there was no other way to say
+what bar size to backtest on.
+
+Frontend: `routes/Backtest.tsx` — a strategy/symbol/date-range form,
+a metrics grid, `components/backtest/EquityCurveChart.tsx` (Recharts)
+for the equity curve, and the Phase 2 `CandleChart` reused for the
+same run's buy/sell markers. `CandleChart` gained three optional props
+for this: `markers` (drawn via `lightweight-charts` v5's
+`createSeriesMarkers` plugin — v5 replaced v4's `series.setMarkers()`
+with a separate marker-plugin API), `initialSymbol`/`initialInterval`,
+and `fixedRange` (a fixed historical window instead of "now minus
+`rangeFor(interval)`" — also switches off the live-polling timer,
+since re-polling "now" makes no sense while looking at one specific
+backtest run's fixed date range). The Backtest page mounts it with
+`key={runCount}` so a new run remounts it cleanly with the new
+range/markers rather than fighting stale internal state.
+
 ## Free-tier notes
 
 - Render's free web services sleep on idle — bad for a service that needs to poll continuously. Either run Trigger/Executor as a persistent loop on an Oracle Cloud Always-Free VM, or replace the loop with a scheduled GitHub Action / external cron (e.g. cron-job.org) hitting a `/trigger/run-once` endpoint.
@@ -200,7 +268,7 @@ verbatim.
 - [x] 2 — Frontend chart
 - [x] 3 — Strategy Engine core
 - [x] 4 — Strategy Builder UI
-- [ ] 5 — Backtesting Engine
+- [x] 5 — Backtesting Engine
 - [ ] 6 — Risk Manager, Trigger & Executor
 - [ ] 7 — ML/RL strategy plugin
 - [ ] 8 — Dashboard

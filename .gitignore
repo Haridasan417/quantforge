@@ -33,3 +33,8 @@ Thumbs.db
 # --- Logs ---
 *.log
 npm-debug.log*
+
+# --- Files the Claude desktop app saves locally when it delivers a
+#     conversation attachment (e.g. screenshots) into this connected
+#     folder -- conversation artifacts, not project source. ---
+Claude outputs/
