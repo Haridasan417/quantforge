@@ -231,15 +231,26 @@ to be used end to end:
    simulated fill at the live LTP. The **Dashboard** (`/`) shows it appear
    live — P&L, the trade log, and the equity curve all update over the
    open WebSocket with no manual refresh.
-5. **RL strategy** — same Backtest flow as step 3, but with
-   `strategy_id: "rl"` and `config: {"checkpoint_name": "<name>"}` pointing
-   at a checkpoint trained in `ml/notebooks/train_rl_agent.ipynb`. Same
-   interface, same metrics, same Dashboard — proof the RL policy is a
-   drop-in `Strategy` like any other, not a special case.
+5. **RL strategy** — same Backtest flow as step 3, but picking `rl` from the
+   Strategy dropdown reveals a **Checkpoint Name** field (the Backtest form
+   renders one input per required config field a strategy's schema
+   declares — currently just this one, since `RLConfig.checkpoint_name` has
+   no sensible default). Enter the base filename of a checkpoint trained in
+   `ml/notebooks/train_rl_agent.ipynb` (e.g.
+   `dqn_RELIANCE_NS_20260910T090649Z`, no `.zip`). Same interface, same
+   metrics, same Dashboard as any other strategy — proof the RL policy is a
+   drop-in `Strategy`, not a special case.
 
 Step 4 needs real SmartAPI credentials configured on the backend and either
 NSE market hours or a manual `force=true` run (see "Deployment" above) to
-see a fill land.
+see a fill land. Step 5 needs the checkpoint's `.zip`/`.json` pair to
+actually exist at `ml/checkpoints/<name>.zip` on whichever backend is
+running the request — trained checkpoints are gitignored (see CLAUDE.md's
+"Free-tier notes"), so a checkpoint that only exists on your machine won't
+be there on the deployed Render instance; run the backend locally to demo
+this step against your own trained checkpoint, or add the `.zip`/`.json`
+pair as a Render persistent disk / build-time download if you want it
+demoable on the deployed URL too.
 
 ## Status
 

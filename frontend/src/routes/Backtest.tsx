@@ -17,6 +17,24 @@ function formatPercent(value: number): string {
   return `${(value * 100).toFixed(2)}%`;
 }
 
+// Loose shape of the JSON Schema `GET /api/strategies` returns per strategy
+// (backend/app/strategy_engine/*'s `config_schema()`) — just enough to
+// drive a config form generically, without hard-coding which built-in
+// needs what. Right now only RLConfig.checkpoint_name has no default (see
+// CLAUDE.md's "Follow-up fix" note under Phase 7 part B), so this ends up
+// rendering exactly one field for the "rl" strategy and nothing for every
+// other built-in — but it isn't special-cased to "rl": any future
+// built-in with a required config field gets a form field here for free.
+interface JsonSchemaProperty {
+  title?: string;
+  description?: string;
+}
+
+interface ConfigJsonSchema {
+  properties?: Record<string, JsonSchemaProperty>;
+  required?: string[];
+}
+
 export default function Backtest() {
   const [strategies, setStrategies] = useState<StrategyInfo[]>([]);
   const [strategiesError, setStrategiesError] = useState<string | null>(null);
@@ -26,6 +44,7 @@ export default function Backtest() {
   const [symbol, setSymbol] = useState("RELIANCE.NS");
   const [start, setStart] = useState(initialRange.start);
   const [end, setEnd] = useState(initialRange.end);
+  const [configValues, setConfigValues] = useState<Record<string, string>>({});
 
   const [running, setRunning] = useState(false);
   const [runError, setRunError] = useState<string | null>(null);
@@ -44,11 +63,33 @@ export default function Backtest() {
     })();
   }, []);
 
+  const selectedStrategy = strategies.find((s) => s.name === strategyId);
+  const configSchema = (selectedStrategy?.config_schema ?? {}) as ConfigJsonSchema;
+  // Only built-ins take a per-request config override at all (a saved
+  // graph's config lives on its own row — see resolve_strategy in
+  // backend/app/backtest_engine/resolve.py); required fields on a graph's
+  // schema describe its *saved* nodes/edges shape, not something to fill
+  // in here, so this stays empty for source === "graph".
+  const requiredConfigFields = selectedStrategy?.source === "builtin" ? configSchema.required ?? [] : [];
+
+  // Reset any typed-in config values when the strategy selection changes,
+  // so switching away from "rl" and back doesn't resubmit a stale value.
+  useEffect(() => {
+    setConfigValues({});
+  }, [strategyId]);
+
   const runBacktest = async () => {
     setRunError(null);
 
     if (!strategyId) {
       setRunError("Pick a strategy first.");
+      return;
+    }
+
+    const missingField = requiredConfigFields.find((field) => !configValues[field]?.trim());
+    if (missingField) {
+      const label = configSchema.properties?.[missingField]?.title ?? missingField;
+      setRunError(`${label} is required for this strategy.`);
       return;
     }
 
@@ -61,6 +102,9 @@ export default function Backtest() {
         symbol: symbol.trim().toUpperCase(),
         start: startIso,
         end: endIso,
+        ...(requiredConfigFields.length > 0
+          ? { config: Object.fromEntries(requiredConfigFields.map((field) => [field, configValues[field]?.trim()])) }
+          : {}),
       });
       setResult(data);
       setRunCount((n) => n + 1);
@@ -150,6 +194,25 @@ export default function Backtest() {
             className="rounded-md border border-slate-700 bg-slate-900 px-3 py-1.5 text-sm text-white"
           />
         </div>
+
+        {requiredConfigFields.map((field) => {
+          const schema = configSchema.properties?.[field];
+          return (
+            <div key={field}>
+              <label className="mb-1 block text-xs text-slate-400" htmlFor={`config-${field}`}>
+                {schema?.title ?? field}
+              </label>
+              <input
+                id={`config-${field}`}
+                value={configValues[field] ?? ""}
+                onChange={(e) => setConfigValues((prev) => ({ ...prev, [field]: e.target.value }))}
+                placeholder={schema?.description ?? field}
+                title={schema?.description}
+                className="w-56 rounded-md border border-slate-700 bg-slate-900 px-3 py-1.5 text-sm text-white"
+              />
+            </div>
+          );
+        })}
 
         <button
           type="submit"
