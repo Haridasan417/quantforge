@@ -96,6 +96,43 @@ this gets replaced by a real push once the Trigger/Executor pipeline (Phase
 6) and the Dashboard's WebSocket (Phase 8) exist — search for `POLL_INTERVAL_MS`
 when that phase lands.
 
+## Strategy Engine
+
+`backend/app/strategy_engine/`: every strategy — rule-based (Phase 3),
+a saved visual graph from the builder (Phase 4), or an RL policy (Phase
+7) — implements the abstract `Strategy` class (`base_strategy.py`):
+`generate_signal(df, position) -> Signal` plus a `config_schema()`
+classmethod returning a Pydantic model. `Signal` is a small dataclass
+(`action: BUY/SELL/HOLD`, plus optional `confidence`/`size`/`reason`) so
+simple strategies can ignore the extra fields while RL/walk-forward
+strategies can use them later without an interface change. `Position`
+is QuantForge's own minimal holding abstraction (`side`/`qty`/
+`avg_price`) — not backtrader's — so a strategy can tell "am I already
+in this trade" without reaching into portfolio bookkeeping.
+
+Strategies self-register via `@register_strategy("name")`
+(`registry.py`) at import time; `strategy_engine/strategies/__init__.py`
+imports every concrete strategy module purely for that side effect, and
+`list_strategies()` / `get_strategy()` read the registry. `GET
+/api/strategies` returns each registered strategy's name, docstring,
+and `config_schema().model_json_schema()` — the Strategy Builder
+(Phase 4) renders config forms and node parameters straight from that
+JSON Schema, so adding a new strategy never needs matching frontend
+code.
+
+Two built-ins ship in `strategy_engine/strategies/`: `MACrossoverStrategy`
+(fast/slow MA crossover) and `RSIThresholdStrategy` (buy below X, sell
+above Y, reusing `data_service.indicators.rsi` rather than
+recomputing). While building `RSIThresholdStrategy`'s tests, found that
+`pandas-ta`'s DataFrame accessor (`df.ta.rsi()` / `.ema()` / `.macd()`)
+falls back to silently returning the *original* input df (not `None`,
+not an empty Series) when there isn't enough data for the requested
+length — `data_service/indicators.py`'s `rsi()`/`ema()`/`macd()` now
+detect that fallback and normalize it to a properly-shaped all-NaN
+Series/DataFrame instead, so warm-up windows behave the same
+(`pd.isna(...)`-checkable) everywhere these functions are used,
+including `/api/candles`.
+
 ## Free-tier notes
 
 - Render's free web services sleep on idle — bad for a service that needs to poll continuously. Either run Trigger/Executor as a persistent loop on an Oracle Cloud Always-Free VM, or replace the loop with a scheduled GitHub Action / external cron (e.g. cron-job.org) hitting a `/trigger/run-once` endpoint.
@@ -108,7 +145,7 @@ when that phase lands.
 - [x] 0 — Repo, environment & scaffolding
 - [x] 1 — Backend core + Data Service
 - [x] 2 — Frontend chart
-- [ ] 3 — Strategy Engine core
+- [x] 3 — Strategy Engine core
 - [ ] 4 — Strategy Builder UI
 - [ ] 5 — Backtesting Engine
 - [ ] 6 — Risk Manager, Trigger & Executor

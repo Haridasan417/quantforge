@@ -19,12 +19,27 @@ DEFAULT_MACD_SIGNAL = 9
 SUPPORTED_INDICATORS = {"rsi", "ema", "macd"}
 
 
+def _nan_series(df: pd.DataFrame, name: str) -> pd.Series:
+    return pd.Series(float("nan"), index=df.index, name=name)
+
+
 def rsi(df: pd.DataFrame, length: int = DEFAULT_RSI_LENGTH) -> pd.Series:
-    return df.ta.rsi(length=length)
+    result = df.ta.rsi(length=length)
+    # pandas-ta's DataFrame accessor falls back to handing back the
+    # *original* df (not None, not a Series) when there isn't enough
+    # data for the requested length — quietly returning that would blow
+    # up every caller expecting a Series. Normalize it to an all-NaN
+    # series of the same shape a short/warm-up window would produce.
+    if not isinstance(result, pd.Series):
+        return _nan_series(df, name=f"RSI_{length}")
+    return result
 
 
 def ema(df: pd.DataFrame, length: int = DEFAULT_EMA_LENGTH) -> pd.Series:
-    return df.ta.ema(length=length)
+    result = df.ta.ema(length=length)
+    if not isinstance(result, pd.Series):
+        return _nan_series(df, name=f"EMA_{length}")
+    return result
 
 
 def macd(
@@ -33,7 +48,15 @@ def macd(
     slow: int = DEFAULT_MACD_SLOW,
     signal: int = DEFAULT_MACD_SIGNAL,
 ) -> pd.DataFrame:
-    return df.ta.macd(fast=fast, slow=slow, signal=signal)
+    result = df.ta.macd(fast=fast, slow=slow, signal=signal)
+    expected_cols = {
+        f"MACD_{fast}_{slow}_{signal}",
+        f"MACDh_{fast}_{slow}_{signal}",
+        f"MACDs_{fast}_{slow}_{signal}",
+    }
+    if not isinstance(result, pd.DataFrame) or not expected_cols.issubset(result.columns):
+        return pd.DataFrame({col: _nan_series(df, name=col) for col in sorted(expected_cols)})
+    return result
 
 
 def compute_indicators(df: pd.DataFrame, indicators: list[str]) -> pd.DataFrame:
