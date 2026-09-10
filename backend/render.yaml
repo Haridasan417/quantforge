@@ -1,0 +1,44 @@
+# Render Blueprint for the QuantForge API (Phase 9).
+#
+# Not required for a manual "New Web Service" setup (see README.md's
+# Deployment section for the exact dashboard steps) — this file exists so
+# the deploy is reproducible/documented, and so a Blueprint deploy
+# (render.com/docs/blueprint-spec) works if you ever want one.
+#
+# Render's free web services sleep after 15 minutes idle (see CLAUDE.md's
+# "Free-tier notes") — that's why Trigger/Executor run in single-hit mode
+# here (POST /trigger/run-once, woken on a schedule by
+# .github/workflows/trigger-poll.yml) instead of as persistent loop
+# processes, which a sleeping service can't sustain.
+services:
+  - type: web
+    name: quantforge-api
+    runtime: python
+    plan: free
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    # `alembic upgrade head` runs on every boot, not just the first —
+    # idempotent against an already-current DB, and means a schema change
+    # ships the moment the service restarts rather than needing a manual
+    # migration step against production.
+    startCommand: alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.7
+      # Secrets and per-deployment values — never committed. `sync: false`
+      # means Render prompts for these in the dashboard instead of reading
+      # them from this file. See backend/.env.example for what each one is.
+      - key: DATABASE_URL
+        sync: false
+      - key: REDIS_URL
+        sync: false
+      - key: SMARTAPI_KEY
+        sync: false
+      - key: SMARTAPI_CLIENT_ID
+        sync: false
+      - key: SMARTAPI_PASSWORD
+        sync: false
+      - key: SMARTAPI_TOTP_SECRET
+        sync: false
+      - key: CORS_ORIGINS
+        sync: false

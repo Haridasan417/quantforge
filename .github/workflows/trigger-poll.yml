@@ -1,0 +1,44 @@
+name: Trigger poll
+
+# Render's free web service (see backend/render.yaml, CLAUDE.md's
+# "Free-tier notes") sleeps on idle, so Trigger/Executor can't run as a
+# persistent loop process there the way they would on an always-on VM.
+# This is the single-hit alternative documented in CLAUDE.md's "Loop vs.
+# single-hit" section: hit POST /trigger/run-once on a schedule instead.
+# The endpoint itself gates on NSE hours (9:15-15:30 IST, Mon-Fri) and is
+# a no-op outside them, so the cron window below only needs to *cover*
+# market hours generously, not match them exactly.
+#
+# 9:15-15:30 IST = 03:45-10:00 UTC. Cron has no way to start at :45, so
+# this runs every 5 minutes across 03:00-10:00 UTC Mon-Fri, a little wider
+# than market hours on both ends — the endpoint's own gate handles the
+# exact boundary.
+on:
+  schedule:
+    - cron: "*/5 3-9 * * 1-5"
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Bypass the NSE-hours gate (manual/demo runs only)"
+        type: boolean
+        default: false
+
+jobs:
+  poll:
+    runs-on: ubuntu-latest
+    steps:
+      - name: POST /trigger/run-once
+        env:
+          API_URL: ${{ secrets.QUANTFORGE_API_URL }}
+          FORCE: ${{ github.event.inputs.force || 'false' }}
+        run: |
+          if [ -z "$API_URL" ]; then
+            echo "::error::Repository secret QUANTFORGE_API_URL is not set — see README.md's Deployment section." >&2
+            exit 1
+          fi
+          # --max-time 100: Render's free tier can take 30-50s to wake from
+          # sleep on the first hit after idling; give it room rather than
+          # timing out and reporting a false failure.
+          curl -sS --max-time 100 --fail-with-body \
+            -X POST "${API_URL%/}/trigger/run-once?force=${FORCE}" \
+            -w "\nHTTP %{http_code}\n"

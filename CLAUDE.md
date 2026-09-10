@@ -12,7 +12,8 @@ No-code, AI-augmented algorithmic trading platform: live/historical charting, a 
 | Charting | TradingView `lightweight-charts` |
 | Strategy builder | React Flow |
 | Dashboard charts | Recharts |
-| Backend | FastAPI (Python 3.12 — `pandas-ta` 0.4.x requires it) → Oracle Cloud Free VM or Render |
+| Backend | FastAPI (Python 3.12 — `pandas-ta` 0.4.x requires it) → Render (free web service) |
+| Scheduled Trigger/Executor | GitHub Actions cron → `POST /trigger/run-once` (see "Deployment", Phase 9) |
 | DB / migrations | Postgres (Neon) via SQLAlchemy 2.0 (async) + Alembic |
 | Queue | Redis (Upstash) |
 | Market data | `yfinance` primary, `nsepy` fallback for NSE symbols |
@@ -652,9 +653,60 @@ gained a test that the publish actually fires with the right payload shape
 (real single shared `fakeredis` instance, `pubsub.listen()`) and a test
 that a broken Redis publish doesn't stop the trade from committing.
 
+## Deployment (Phase 9)
+
+**Backend: Render, not an Oracle Cloud VM — chosen for this project.** Both
+modes were implemented as of Phase 6 (see "Loop vs. single-hit" above), and
+CLAUDE.md's Phase 6 section left the choice open; Phase 9 settles it in
+favor of Render + a scheduled GitHub Action, because it needs no cloud VM
+to provision, SSH into, or keep patched — the whole backend deploy is `git
+push` plus a Render dashboard form. The tradeoff is Render's free tier
+sleeping after ~15 minutes idle, which is exactly why Trigger/Executor
+can't run as the persistent-loop processes an always-on VM would host —
+see the next point.
+
+**Scheduled Trigger/Executor: `.github/workflows/trigger-poll.yml`.** A
+GitHub Actions cron job POSTs to `/trigger/run-once` every 5 minutes across
+a window that generously covers NSE hours (03:00-09:55 UTC = before
+9:15-15:30 IST, Mon-Fri) rather than trying to match the exact open/close
+minute — cron can't start a schedule at `:45` anyway, and the endpoint
+itself already gates on `is_market_open()`, so a hit outside real market
+hours is just a fast no-op (`market_open: false` in the response), not a
+wasted trade cycle. The workflow reads the deployed backend's URL from a
+repository secret (`QUANTFORGE_API_URL`) rather than a hard-coded value, so
+redeploying to a different Render URL is a one-line secret update, not a
+code change; `workflow_dispatch` with a `force` input lets you trigger an
+off-hours run on demand (Actions tab → "Trigger poll" → Run workflow) for
+testing/demos without waiting for market hours.
+
+**Frontend: Vercel, with `frontend/vercel.json`'s SPA rewrite.** React
+Router (`BrowserRouter`) means routes like `/chart` and `/backtest` only
+exist client-side — without a rewrite, Vercel's static host 404s on a
+direct load or refresh of anything but `/`, since there's no file at that
+path. `vercel.json`'s single rewrite rule (`/(.*)` → `/index.html`) fixes
+that by always serving the SPA shell and letting React Router take it from
+there.
+
+**CORS is a live env var, not a code change.** `app/config.py`'s
+`cors_origins` (env `CORS_ORIGINS`) already existed from earlier phases
+specifically for this moment — the deployed Vercel URL is added to it on
+Render once known, no redeploy-the-code-to-fix-CORS cycle needed.
+
+**`backend/render.yaml`** documents the exact build/start commands and the
+env var *names* (not values — `sync: false` on every one, since none of
+them belong in git) for a reproducible/Blueprint deploy; the manual
+dashboard flow in README.md's "Deployment" section uses the same commands
+and doesn't require this file to exist, so either path works.
+
+See README.md's "Deployment" section for the exact step-by-step (Render →
+Vercel → GitHub secret, in that order — Vercel's `VITE_API_BASE_URL` and
+Render's `CORS_ORIGINS` are each other's dependency, so one pass through
+both is needed either way) and "Demo script" for a guided walkthrough of
+the deployed app.
+
 ## Free-tier notes
 
-- Render's free web services sleep on idle — bad for a service that needs to poll continuously. Either run Trigger/Executor as a persistent loop on an Oracle Cloud Always-Free VM (`python -m app.trigger_service` / `python -m app.executor_service`), or replace the loop with a scheduled GitHub Action / external cron (e.g. cron-job.org) hitting `POST /trigger/run-once` — both modes are implemented as of Phase 6, see above.
+- Render's free web services sleep on idle — this project's answer for Trigger/Executor is the scheduled GitHub Action above, not an always-on VM; see "Deployment" for why. An Oracle Cloud Always-Free VM running `python -m app.trigger_service` / `python -m app.executor_service` as persistent loops remains a documented, implemented alternative if you'd rather not depend on a scheduled hit (README.md's "Deployment" section covers both).
 - Large RL checkpoints: use Git LFS, or keep only metadata (version, trained_at, metrics) in Postgres and the binary in Drive/release assets.
 
 ## Phase progress
@@ -670,4 +722,4 @@ that a broken Redis publish doesn't stop the trade from committing.
 - [x] 6 — Risk Manager, Trigger & Executor
 - [x] 7 — ML/RL strategy plugin
 - [x] 8 — Dashboard
-- [ ] 9 — Deployment & polish
+- [x] 9 — Deployment & polish
