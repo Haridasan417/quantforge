@@ -20,7 +20,8 @@ project follows.
 ## Stack
 
 Frontend: React + Vite + TypeScript + Tailwind, deployed to Vercel.
-Backend: FastAPI (Python 3.11+), deployed to Oracle Cloud Free VM or Render.
+Backend: FastAPI (Python 3.12 — required by `pandas-ta` 0.4.x), deployed to
+Oracle Cloud Free VM or Render.
 DB: Postgres (Neon) via SQLAlchemy 2.0 (async) + Alembic. Queue: Redis
 (Upstash). Market data: `yfinance` / `nsepy`. Backtesting: `backtrader`.
 Broker data: Angel One SmartAPI (quote/LTP only). RL: `stable-baselines3` +
@@ -52,14 +53,15 @@ docs/PROMPTS.md              phase-by-phase build prompts
 
 ```bash
 cd backend
-python3 -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
+python3.12 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt -r requirements-dev.txt
 cp .env.example .env   # then fill in DATABASE_URL, REDIS_URL, SMARTAPI_*
-alembic upgrade head    # once migrations exist (Phase 1+)
+alembic upgrade head
 uvicorn app.main:app --reload
 ```
 
-`GET /health` should return `{"status": "ok"}`.
+`GET /health` should return `{"status": "ok"}`. `GET /api/candles?symbol=RELIANCE.NS&interval=1d&start=2024-01-01&end=2024-02-01&indicators=rsi,macd,ema`
+returns OHLCV bars plus the requested indicator columns.
 
 ### Frontend
 

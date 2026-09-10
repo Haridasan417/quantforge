@@ -12,7 +12,7 @@ No-code, AI-augmented algorithmic trading platform: live/historical charting, a 
 | Charting | TradingView `lightweight-charts` |
 | Strategy builder | React Flow |
 | Dashboard charts | Recharts |
-| Backend | FastAPI (Python 3.11+) → Oracle Cloud Free VM or Render |
+| Backend | FastAPI (Python 3.12 — `pandas-ta` 0.4.x requires it) → Oracle Cloud Free VM or Render |
 | DB / migrations | Postgres (Neon) via SQLAlchemy 2.0 (async) + Alembic |
 | Queue | Redis (Upstash) |
 | Market data | `yfinance` primary, `nsepy` fallback for NSE symbols |
@@ -66,6 +66,24 @@ Angel One's SmartAPI has no broker-side sandbox, so "paper trading" is simulated
 - The Executor computes a simulated fill (at LTP, optionally with slippage modeling) and writes it to `trades` itself.
 - Live order-placement calls are out of scope for this entire project. If a phase prompt ever seems to point that direction, that's a bug in the prompt, not a green light.
 
+## Data Service caching
+
+`GET /api/candles` caches the raw OHLCV response (not the indicator-augmented
+one) in a Postgres table, `candle_cache`, keyed on the exact
+`(symbol, interval, start, end)` request — a repeat request for that same
+range is served from Postgres without re-hitting yfinance/nsepy; a different
+or overlapping range is treated as a miss and re-fetched. Indicators
+(RSI/MACD/EMA) are computed fresh on every request from the cached raw bars,
+since that's cheap and keeps the cached payload reusable across different
+`indicators=` query values.
+
+Chose Postgres over a Redis (Upstash) TTL cache for this because: historical
+bars don't change once their range is in the past, so there's nothing that
+needs to expire (a TTL is the wrong tool); and Neon is already provisioned
+for the ORM models, so this doesn't pull in a second datastore a phase early
+— Redis/Upstash arrives in Phase 6 for the Trigger→Executor queue, which is
+what it's actually needed for.
+
 ## Free-tier notes
 
 - Render's free web services sleep on idle — bad for a service that needs to poll continuously. Either run Trigger/Executor as a persistent loop on an Oracle Cloud Always-Free VM, or replace the loop with a scheduled GitHub Action / external cron (e.g. cron-job.org) hitting a `/trigger/run-once` endpoint.
@@ -76,7 +94,7 @@ Angel One's SmartAPI has no broker-side sandbox, so "paper trading" is simulated
 *(check these off as phases land — update this file yourself at the end of each one)*
 
 - [x] 0 — Repo, environment & scaffolding
-- [ ] 1 — Backend core + Data Service
+- [x] 1 — Backend core + Data Service
 - [ ] 2 — Frontend chart
 - [ ] 3 — Strategy Engine core
 - [ ] 4 — Strategy Builder UI
