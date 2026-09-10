@@ -254,9 +254,148 @@ backtest run's fixed date range). The Backtest page mounts it with
 `key={runCount}` so a new run remounts it cleanly with the new
 range/markers rather than fighting stale internal state.
 
+## Risk Manager, Trigger & Executor
+
+Three packages implement the paper-trading pipeline end to end: Trigger
+finds work, the Redis queue hands it off, Executor does the work and
+asks Risk Manager for permission first.
+
+**Risk Manager** (`app/risk_manager/manager.py`) is a stateless
+`RiskManager.evaluate(signal, symbol, reference_price, position,
+portfolio) -> RiskDecision`, applying three configurable rules —
+`stop_loss_pct` (default 5%), `max_position_size_pct` (default 20% of
+equity per symbol), `max_total_exposure_pct` (default 60% of equity
+across all symbols) — sourced from `app/config.py`'s `Settings` (env
+vars `STOP_LOSS_PCT`/`MAX_POSITION_SIZE_PCT`/`MAX_TOTAL_EXPOSURE_PCT`,
+see `.env.example`) unless a caller passes its own
+`RiskManagerSettings`. A protective stop-loss check runs first and can
+force a SELL regardless of what the strategy's own signal says this
+bar; otherwise HOLD is a no-op, SELL is approved only when actually
+long, and BUY is sized to `min(max_position_size_pct × equity,
+remaining exposure budget, available cash)`, floored to a whole share
+count. `RiskDecision.order` is `None` on rejection — the reason string
+is always populated, on approval or not, so the Executor/tests can log
+or assert on *why*.
+
+**The queue** (`app/queue.py`) is one Redis list
+(`quantforge:trigger-events`), FIFO via RPUSH/LPOP — no consumer
+groups or ack/retry. That's deliberate: strategies are re-evaluated on
+a timer (or a single cron hit), not edge-triggered, so a dropped event
+just waits for the next Trigger cycle to re-evaluate the same
+strategy/symbol; there's nothing here that needs at-least-once
+delivery guarantees. `push_event`/`pop_event`/`queue_length` all accept
+an injectable `client=` so tests use `fakeredis` instead of a real
+Redis connection.
+
+**Deployments, not just strategies.** `strategies` gained `symbol`
+(nullable) and `is_active` (default `False`) columns (migration
+`2a5bbc3df14a`) — a *deployment* is a `strategies` row with both set.
+`POST /api/strategies/activate` (`app/api/strategies.py`) is what
+creates/updates one: given `{strategy_id, symbol, is_active, config?}`,
+a saved graph (`"graph:<id>"`) has its row updated in place (it already
+exists from `POST /api/strategies/custom`); a built-in (e.g.
+`"ma_crossover"`) is find-or-created keyed on `(type, symbol)`, so the
+same built-in can be deployed on multiple symbols as separate rows, and
+re-activating the same pair updates rather than duplicates. Without
+this endpoint the Trigger service's query
+(`is_active=True AND symbol IS NOT NULL`) would have nothing to ever
+find.
+
+**Trigger** (`app/trigger_service/trigger.py`): `is_market_open()`
+gates everything on NSE hours (9:15–15:30 IST, Mon–Fri, no holiday
+calendar yet). `run_trigger_once(db, force=False, client=None)` is the
+one deployment-agnostic core — it queries every active deployment and
+pushes one `{strategy_id, symbol}` event per row (`strategy_id` here is
+always the deployment's integer `strategies.id`, *not* the string
+registry name used elsewhere in the API — built-ins have no row at all
+until deployed, so the registry name alone isn't enough to identify
+*which* deployment). `force=True` bypasses the NSE-hours gate, for
+tests and for a manual/demo hit outside market hours.
+
+**Executor** (`app/executor_service/executor.py`):
+`resolve_deployed_strategy(db, strategy_row_id)` turns that integer id
+into the DB row plus a runnable `Strategy` instance built from *that
+row's own config* (unlike `backtest_engine.resolve_strategy`, which
+uses class defaults for built-ins — each deployment may have been
+activated with different parameters). `process_event` then: fetches
+180 days of fresh OHLCV via `get_candles_cached` (same cached path
+`/api/candles`/backtest use — this always misses the cache since the
+window's `end` is `datetime.now()` every call, which is correct here:
+the brief calls for *fresh* data, not cached-as-of-activation data),
+derives `Position` from the single latest `PortfolioSnapshot.holdings`
+entry for that symbol (account-wide, no per-strategy book — see below),
+calls `strategy.generate_signal`, and passes the result through
+`RiskManager.evaluate` using the **candle close** as the reference
+price. Only if that's approved does it fetch the real LTP and write the
+`Trade` (at the LTP, not the reference close) plus an updated
+`PortfolioSnapshot` — fetching LTP only after approval avoids a wasted
+SmartAPI call when the answer was always going to be "no trade".
+
+**Position/portfolio state** is derived, not stored per-strategy:
+there's one account-wide `PortfolioSnapshot.holdings` JSONB dict
+(`{symbol: {qty, avg_price}}`), read from the latest row and rewritten
+after every fill. This means every active deployment shares one paper
+cash balance — deliberate, since `PortfolioSnapshot` has no
+`strategy_id` column and adding per-strategy books would mean solving
+capital allocation across strategies, out of scope here. A BUY merges
+into any existing holding at a qty-weighted average cost (defensive:
+the Risk Manager already blocks a second BUY while long, so this
+should only ever create a fresh entry in practice); a SELL always
+closes the position outright, since the Risk Manager only ever approves
+selling the full held quantity.
+
+**SmartAPI, read-only.** `app/executor_service/ltp_provider.py` defines
+`LTPProvider` (ABC: `get_ltp(symbol) -> float`) so `process_event` never
+imports the SmartAPI SDK directly. `SmartApiLTPProvider` wraps
+`SmartConnect.ltpData(exchange, tradingsymbol, symboltoken)` — the
+quote endpoint, run via `asyncio.to_thread` since the SDK is
+synchronous — and has no method that could place, modify, or cancel an
+order, by construction. Angel One identifies instruments by a numeric
+symboltoken, not by trading symbol alone; there's no NSE
+instrument-master lookup built (out of scope for this phase), so
+`SmartApiLTPProvider(symbol_token_map=...)` must be handed a QuantForge
+symbol → symboltoken mapping for whatever's actually deployed before it
+can fetch anything real. `FakeLTPProvider(prices={...})` is what every
+test uses instead.
+
+**Loop vs. single-hit, not hard-coded.** `run_trigger_once` and
+`run_executor_once` are the deployment-agnostic cores; nothing in
+`trigger_service`/`executor_service` assumes one deployment shape over
+the other:
+- **Always-on** (an Oracle Cloud Always-Free VM): `python -m
+  app.trigger_service` and `python -m app.executor_service` each run a
+  loop (`run_trigger_loop`/`run_executor_loop`) polling every
+  `TRIGGER_POLL_SECONDS`/`EXECUTOR_POLL_SECONDS` (default 60s each) as
+  two persistent processes.
+- **Single-hit** (Render free tier, which sleeps on idle — see below):
+  `POST /trigger/run-once` (`app/api/trigger.py`, deliberately *not*
+  under the `/api` prefix — this exact path is what the note below
+  names) runs one Trigger poll immediately followed by one Executor
+  drain, synchronously, in a single request. A scheduled GitHub Action
+  or external cron (e.g. cron-job.org) hits this on a schedule instead
+  of a loop ever running. `?force=true` bypasses the NSE-hours gate for
+  manual/demo hits.
+
+**Testing.** Risk Manager and Trigger are pure/DB-free unit tests
+(fixed `RiskManagerSettings`, a fake `AsyncSession` stub, `fakeredis`
+for the queue). Executor's unit tests monkeypatch
+`resolve_deployed_strategy`/`get_candles_cached` and use
+`FakeLTPProvider`, same convention. The one exception to "DB-free" is
+`tests/test_executor_integration.py`: it pushes a fake event through a
+`fakeredis` queue and runs the real `run_executor_once` against a real
+Postgres connection (whatever `DATABASE_URL` points at — skips
+gracefully if unreachable), asserting a `Trade` row lands with
+correctly risk-adjusted `qty` (not just "a trade exists"), then deletes
+every row it created in a `finally` block, FK-safe (trades before their
+strategy row) — this is what actually exercises `Trade`/
+`PortfolioSnapshot`'s FK constraints, JSONB columns, and `Numeric`
+precision, which a fake session can't meaningfully verify. Async tests
+run via `pytest-asyncio` (`asyncio_mode = auto` in `pytest.ini`, added
+this phase).
+
 ## Free-tier notes
 
-- Render's free web services sleep on idle — bad for a service that needs to poll continuously. Either run Trigger/Executor as a persistent loop on an Oracle Cloud Always-Free VM, or replace the loop with a scheduled GitHub Action / external cron (e.g. cron-job.org) hitting a `/trigger/run-once` endpoint.
+- Render's free web services sleep on idle — bad for a service that needs to poll continuously. Either run Trigger/Executor as a persistent loop on an Oracle Cloud Always-Free VM (`python -m app.trigger_service` / `python -m app.executor_service`), or replace the loop with a scheduled GitHub Action / external cron (e.g. cron-job.org) hitting `POST /trigger/run-once` — both modes are implemented as of Phase 6, see above.
 - Large RL checkpoints: use Git LFS, or keep only metadata (version, trained_at, metrics) in Postgres and the binary in Drive/release assets.
 
 ## Phase progress
@@ -269,7 +408,7 @@ range/markers rather than fighting stale internal state.
 - [x] 3 — Strategy Engine core
 - [x] 4 — Strategy Builder UI
 - [x] 5 — Backtesting Engine
-- [ ] 6 — Risk Manager, Trigger & Executor
+- [x] 6 — Risk Manager, Trigger & Executor
 - [ ] 7 — ML/RL strategy plugin
 - [ ] 8 — Dashboard
 - [ ] 9 — Deployment & polish

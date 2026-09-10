@@ -1,3 +1,8 @@
 -r requirements.txt
 pytest==8.3.4
 httpx==0.28.1
+
+# Phase 6: async test support + an in-memory Redis stand-in so the
+# Trigger/Executor test suite never needs a real Redis connection.
+pytest-asyncio==0.25.2
+fakeredis==2.38.0

@@ -13,6 +13,21 @@ class Settings(BaseSettings):
     redis_url: str = "redis://localhost:6379"
     smartapi_key: str = ""
     smartapi_client_id: str = ""
+    # PIN/password and TOTP secret for SmartConnect.generateSession — only
+    # needed by SmartApiLTPProvider (app/executor_service/ltp_provider.py),
+    # never touched by tests (which use FakeLTPProvider instead).
+    smartapi_password: str = ""
+    smartapi_totp_secret: str = ""
+
+    # Risk Manager defaults (Phase 6) — a signal is adjusted/rejected
+    # against these unless a future settings-table override exists (see
+    # CLAUDE.md's Phase 6 section). Conservative paper-trading defaults:
+    # exit a long once it's down 5%, never put more than 20% of equity
+    # in one symbol, never have more than 60% of equity in the market at
+    # once.
+    stop_loss_pct: float = 0.05
+    max_position_size_pct: float = 0.20
+    max_total_exposure_pct: float = 0.60
 
     # The Vite dev server and the deployed frontend run on a different
     # origin than the API, so the browser needs CORS to fetch /api/*.

@@ -17,3 +17,10 @@ pandas-ta==0.4.71b0
 
 # Backtesting (Phase 5)
 backtrader==1.9.78.123
+
+# Risk Manager, Trigger & Executor (Phase 6)
+redis==8.1.0
+smartapi-python==1.5.5
+pyotp==2.10.0
+logzero==1.7.0
+websocket-client==1.9.2

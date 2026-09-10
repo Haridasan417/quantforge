@@ -1,9 +1,13 @@
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import ValidationError
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_db
 from app.models.strategy import Strategy as StrategyModel
 from app.schemas.strategies import (
+    ActivateStrategyRequest,
+    ActivateStrategyResponse,
     IndicatorField,
     SaveGraphStrategyRequest,
     StrategiesResponse,
@@ -16,6 +20,7 @@ from app.strategy_engine import (
     GraphStrategy,
     GraphStrategyConfig,
     GraphStrategyError,
+    get_strategy,
     list_strategies,
     list_strategy_instances,
     register_strategy_instance,
@@ -103,4 +108,85 @@ async def save_custom_strategy(
         source="graph",
         config_schema=GraphStrategy.config_schema().model_json_schema(),
         config=config.model_dump(),
+    )
+
+
+@router.post("/strategies/activate", response_model=ActivateStrategyResponse)
+async def activate_strategy(
+    payload: ActivateStrategyRequest,
+    db: AsyncSession = Depends(get_db),
+) -> ActivateStrategyResponse:
+    """Turns a registered strategy (built-in class or saved graph) into
+    a *deployment* the Trigger service will poll: a `strategies` row
+    with `symbol` set and `is_active=True`. Without this, `POST
+    /trigger/run-once` (and the always-on Trigger loop) would have
+    nothing to ever find — see CLAUDE.md's Phase 6 section.
+
+    A saved graph (`"graph:<id>"`) already has its own row from `POST
+    /api/strategies/custom`, so activating it updates that row in
+    place. A built-in (e.g. "ma_crossover") has no row until it's
+    deployed on a symbol for the first time; find-or-create is keyed on
+    `(type, symbol)` so the same built-in can be deployed on multiple
+    symbols as separate rows, and re-activating the same (type, symbol)
+    pair updates it rather than duplicating it.
+    """
+    strategy_id = payload.strategy_id
+    symbol = payload.symbol.strip().upper()
+
+    if strategy_id.startswith("graph:"):
+        try:
+            row_id = int(strategy_id.split(":", 1)[1])
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=f"Malformed graph strategy id: {strategy_id!r}") from exc
+
+        row = await db.get(StrategyModel, row_id)
+        if row is None or row.type != "graph":
+            raise HTTPException(status_code=404, detail=f"Unknown strategy: {strategy_id!r}")
+
+        row.symbol = symbol
+        row.is_active = payload.is_active
+        if payload.config is not None:
+            try:
+                GraphStrategy(GraphStrategyConfig(**payload.config)).validate_graph()
+            except (GraphStrategyError, ValidationError) as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+            row.config = payload.config
+    else:
+        try:
+            cls = get_strategy(strategy_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+        config = payload.config if payload.config is not None else {}
+        try:
+            cls(config)  # validates against config_schema()
+        except ValidationError as exc:
+            raise HTTPException(status_code=422, detail=f"Invalid config for {strategy_id!r}: {exc}") from exc
+
+        existing = (
+            await db.execute(select(StrategyModel).where(StrategyModel.type == strategy_id, StrategyModel.symbol == symbol))
+        ).scalar_one_or_none()
+
+        if existing is None:
+            row = StrategyModel(
+                name=f"{strategy_id} / {symbol}",
+                type=strategy_id,
+                config=config,
+                symbol=symbol,
+                is_active=payload.is_active,
+            )
+            db.add(row)
+        else:
+            row = existing
+            row.config = config
+            row.is_active = payload.is_active
+
+    await db.commit()
+    await db.refresh(row)
+
+    return ActivateStrategyResponse(
+        deployment_id=row.id,
+        strategy_id=strategy_id,
+        symbol=symbol,
+        is_active=row.is_active,
     )
