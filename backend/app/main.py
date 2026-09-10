@@ -8,6 +8,7 @@ from sqlalchemy import select
 
 from app.api.backtest import router as backtest_router
 from app.api.candles import router as candles_router
+from app.api.dashboard import router as dashboard_router
 from app.api.strategies import router as strategies_router
 from app.api.trigger import router as trigger_router
 from app.config import settings
@@ -67,6 +68,7 @@ app.include_router(candles_router)
 app.include_router(strategies_router)
 app.include_router(backtest_router)
 app.include_router(trigger_router)
+app.include_router(dashboard_router)
 
 
 @app.get("/health")

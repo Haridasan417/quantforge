@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { ApiError, api } from "../api/client";
 import CandleChart from "../components/CandleChart";
+import MetricCard from "../components/MetricCard";
 import EquityCurveChart from "../components/backtest/EquityCurveChart";
 import type { BacktestResponse } from "../components/backtest/types";
 import type { StrategiesResponse, StrategyInfo } from "../components/strategy-builder/types";
@@ -14,16 +15,6 @@ function defaultDateRange(): { start: string; end: string } {
 
 function formatPercent(value: number): string {
   return `${(value * 100).toFixed(2)}%`;
-}
-
-function MetricCard({ label, value, tone }: { label: string; value: string; tone?: "good" | "bad" }) {
-  const toneClass = tone === "good" ? "text-emerald-400" : tone === "bad" ? "text-red-400" : "text-slate-100";
-  return (
-    <div className="rounded-lg border border-slate-800 bg-slate-900 px-4 py-3">
-      <div className="text-xs uppercase tracking-wide text-slate-500">{label}</div>
-      <div className={`mt-1 text-xl font-semibold ${toneClass}`}>{value}</div>
-    </div>
-  );
 }
 
 export default function Backtest() {

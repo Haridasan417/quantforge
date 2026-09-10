@@ -2,6 +2,13 @@
 // URL (and later: auth headers, error handling) lives in one place.
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000";
 
+// Phase 8: the dashboard's WebSocket needs the same origin as every REST
+// call above, just ws(s):// instead of http(s):// -- one helper so that
+// swap lives here rather than being hand-rolled at each call site.
+export function wsUrl(path: string): string {
+  return `${API_BASE_URL.replace(/^http/, "ws")}${path}`;
+}
+
 export class ApiError extends Error {
   status: number;
   detail?: unknown;

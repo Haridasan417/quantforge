@@ -26,7 +26,7 @@ from app.executor_service.ltp_provider import LTPProvider, SmartApiLTPProvider
 from app.models.portfolio_snapshot import PortfolioSnapshot
 from app.models.strategy import Strategy as StrategyModel
 from app.models.trade import Trade, TradeSide
-from app.queue import pop_event
+from app.queue import pop_event, publish_update
 from app.risk_manager import ApprovedOrder, PortfolioState, RiskManager
 from app.strategy_engine import (
     GraphStrategy,
@@ -118,11 +118,16 @@ async def process_event(
     ltp_provider: LTPProvider,
     *,
     risk_manager: RiskManager | None = None,
+    redis_client: redis_asyncio.Redis | None = None,
 ) -> Trade | None:
     """Handles exactly one `{strategy_id, symbol}` event end-to-end.
     Returns the written `Trade` row, or `None` if nothing fired (no
     data, a HOLD signal, or the Risk Manager rejected it) — the caller
-    (`run_executor_once`) just skips a `None`."""
+    (`run_executor_once`) just skips a `None`. `redis_client` is the
+    same connection `run_executor_once` already threads through for
+    `pop_event` (see its own `client` param) -- reused here for
+    `publish_update` (Phase 8's live dashboard push) rather than adding
+    a second, separately-injected Redis handle for the same queue."""
     risk_manager = risk_manager or RiskManager()
     strategy_row_id = event["strategy_id"]
     symbol = event["symbol"]
@@ -169,17 +174,48 @@ async def process_event(
     db.add(trade)
 
     new_cash, new_holdings, new_equity = _apply_fill(cash, holdings, symbol, decision.order, ltp)
-    db.add(
-        PortfolioSnapshot(
-            timestamp=datetime.now(timezone.utc),
-            cash=Decimal(str(new_cash)),
-            holdings=new_holdings,
-            equity=Decimal(str(new_equity)),
-        )
+    snapshot = PortfolioSnapshot(
+        timestamp=datetime.now(timezone.utc),
+        cash=Decimal(str(new_cash)),
+        holdings=new_holdings,
+        equity=Decimal(str(new_equity)),
     )
+    db.add(snapshot)
 
     await db.commit()
     await db.refresh(trade)
+    await db.refresh(snapshot)
+
+    # Best-effort live push (Phase 8) -- a Redis hiccup here must never
+    # undo or fail an already-committed trade; a missed push just means
+    # the dashboard catches up on its next GET/refresh instead of live,
+    # since Postgres (already committed above) is the durable record
+    # either way.
+    try:
+        await publish_update(
+            {
+                "type": "execution",
+                "trade": {
+                    "id": trade.id,
+                    "strategy_id": trade.strategy_id,
+                    "symbol": trade.symbol,
+                    "side": trade.side.value,
+                    "qty": float(trade.qty),
+                    "price": float(trade.price),
+                    "executed_at": trade.executed_at.isoformat(),
+                },
+                "portfolio": {
+                    "timestamp": snapshot.timestamp.isoformat(),
+                    "cash": float(snapshot.cash),
+                    "equity": float(snapshot.equity),
+                    "holdings": snapshot.holdings,
+                },
+            },
+            client=redis_client,
+        )
+    except Exception:
+        logger.warning("Executor: failed to publish dashboard update for trade id=%s", trade.id, exc_info=True)
+
     return trade
 
 
@@ -203,7 +239,7 @@ async def run_executor_once(
         event = await pop_event(client=client)
         if event is None:
             break
-        trade = await process_event(db, event, ltp_provider, risk_manager=risk_manager)
+        trade = await process_event(db, event, ltp_provider, risk_manager=risk_manager, redis_client=client)
         if trade is not None:
             trades.append(trade)
 

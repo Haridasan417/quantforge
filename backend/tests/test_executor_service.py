@@ -199,6 +199,100 @@ async def test_process_event_buy_writes_trade_and_snapshot(
 
 
 @pytest.mark.asyncio
+async def test_process_event_publishes_a_dashboard_update(
+    monkeypatch: pytest.MonkeyPatch, risk_manager: RiskManager
+) -> None:
+    """Phase 8: a successful fill publishes one `{"type": "execution", ...}`
+    event to the dashboard channel, carrying both the trade and the
+    resulting portfolio state -- so a connected dashboard can update
+    P&L/trade log/equity curve from this one message without a
+    follow-up fetch."""
+    import fakeredis
+
+    stub_strategy = _StubStrategy(Signal(action=SignalAction.BUY, reason="test buy"))
+    row = _strategy_row(id_=7, symbol="RELIANCE.NS")
+
+    monkeypatch.setattr(
+        "app.executor_service.executor.resolve_deployed_strategy",
+        AsyncMock(return_value=(row, stub_strategy)),
+    )
+    monkeypatch.setattr(
+        "app.executor_service.executor.get_candles_cached",
+        AsyncMock(return_value=_synthetic_df([100.0] * 30)),
+    )
+
+    import asyncio
+    import json as json_module
+
+    client = fakeredis.aioredis.FakeRedis(decode_responses=True)
+    pubsub = client.pubsub()
+    await pubsub.subscribe("quantforge:dashboard-updates")
+
+    db = FakeAsyncSession(latest_snapshot=None)
+    ltp_provider = FakeLTPProvider(prices={"RELIANCE.NS": 101.5})
+
+    async def _next_message() -> dict:
+        async for message in pubsub.listen():
+            if message["type"] == "message":
+                return message
+        raise AssertionError("pubsub closed without a message")
+
+    listen_task = asyncio.ensure_future(_next_message())
+    await asyncio.sleep(0.05)  # let the subscribe round-trip settle before publishing
+
+    trade = await process_event(
+        db, {"strategy_id": 7, "symbol": "RELIANCE.NS"}, ltp_provider, risk_manager=risk_manager, redis_client=client
+    )
+    assert trade is not None
+
+    message = await asyncio.wait_for(listen_task, timeout=2.0)
+    payload = json_module.loads(message["data"])
+    assert payload["type"] == "execution"
+    assert payload["trade"]["symbol"] == "RELIANCE.NS"
+    assert payload["trade"]["side"] == "BUY"
+    assert payload["portfolio"]["holdings"] == {"RELIANCE.NS": {"qty": 200, "avg_price": 101.5}}
+    await pubsub.aclose()
+
+
+@pytest.mark.asyncio
+async def test_process_event_survives_a_broken_redis_publish(
+    monkeypatch: pytest.MonkeyPatch, risk_manager: RiskManager
+) -> None:
+    """A Redis hiccup on the dashboard-push side must never undo or fail
+    an already-committed trade -- see process_event's own comment on
+    this. Simulated with a fake client whose `.publish()` always
+    raises."""
+    stub_strategy = _StubStrategy(Signal(action=SignalAction.BUY, reason="test buy"))
+    row = _strategy_row(id_=7, symbol="RELIANCE.NS")
+
+    monkeypatch.setattr(
+        "app.executor_service.executor.resolve_deployed_strategy",
+        AsyncMock(return_value=(row, stub_strategy)),
+    )
+    monkeypatch.setattr(
+        "app.executor_service.executor.get_candles_cached",
+        AsyncMock(return_value=_synthetic_df([100.0] * 30)),
+    )
+
+    class _BrokenRedis:
+        async def publish(self, *args, **kwargs):
+            raise ConnectionError("redis is down")
+
+    db = FakeAsyncSession(latest_snapshot=None)
+    ltp_provider = FakeLTPProvider(prices={"RELIANCE.NS": 101.5})
+
+    trade = await process_event(
+        db,
+        {"strategy_id": 7, "symbol": "RELIANCE.NS"},
+        ltp_provider,
+        risk_manager=risk_manager,
+        redis_client=_BrokenRedis(),
+    )
+    assert trade is not None  # the trade still wrote and committed despite the publish failure
+    assert db.committed is True
+
+
+@pytest.mark.asyncio
 async def test_process_event_hold_signal_writes_nothing(monkeypatch: pytest.MonkeyPatch, risk_manager: RiskManager) -> None:
     stub_strategy = _StubStrategy(Signal(action=SignalAction.HOLD, reason="no signal"))
     row = _strategy_row()
@@ -285,7 +379,7 @@ async def test_run_executor_once_drains_queue_up_to_max_events(monkeypatch: pyte
 
     processed_ids = []
 
-    async def fake_process_event(db, event, ltp_provider, risk_manager=None):
+    async def fake_process_event(db, event, ltp_provider, risk_manager=None, redis_client=None):
         processed_ids.append(event["strategy_id"])
         return None
 
@@ -316,7 +410,7 @@ async def test_run_executor_once_stops_when_queue_empty(monkeypatch: pytest.Monk
     client = fakeredis.aioredis.FakeRedis(decode_responses=True)
     calls = 0
 
-    async def fake_process_event(db, event, ltp_provider, risk_manager=None):
+    async def fake_process_event(db, event, ltp_provider, risk_manager=None, redis_client=None):
         nonlocal calls
         calls += 1
         return None

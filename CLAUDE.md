@@ -570,6 +570,88 @@ RLStrategy: any built-in's params can now be overridden per backtest
 request, not just at `/activate` time. `resolve_strategy` ignores
 `config` for a saved graph (`"graph:<id>"`), unchanged.
 
+## Dashboard (Phase 8)
+
+Live P&L, a trade log, an equity curve, and Sharpe/max-drawdown/win-rate —
+all computed over the **real paper-trading history the Executor has
+actually written**, not a backtest replay. Two new pieces make that live:
+`app/dashboard/` (query + metrics), and a Redis pub/sub channel the
+Executor publishes to and a new WebSocket endpoint forwards.
+
+**Live metrics, not backtrader.** There's no strategy to replay against
+live history — the equity curve and fills already *are* the ground truth
+— so `app/dashboard/metrics.py` computes Sharpe/max-drawdown/win-rate with
+plain Python instead of spinning up a `Cerebro` run. It deliberately
+mirrors `backtest_engine/runner.py`'s conventions so the two are
+comparable at a glance: Sharpe is annualized (`TRADING_DAYS_PER_YEAR =
+252`) and `None` (not `0.0`) when there are fewer than 3 data points or
+the returns have zero variance — same "never traded" vs "a real zero"
+distinction backtrader's own analyzer makes; max drawdown is a
+running-peak-based fraction of equity, not a percentage; win rate pairs
+each symbol's BUYs/SELLs FIFO in chronological order, mirroring the
+Executor's own position rule that a SELL always closes the whole
+position. `app/dashboard/queries.py` separates `fetch_all_trades`
+(ascending, full history — needed for correct FIFO win-rate pairing) from
+`fetch_recent_trades` (descending, capped at `limit`, for the trade log
+table) and `fetch_portfolio_history` (every `PortfolioSnapshot`, for the
+equity curve). `GET /api/dashboard/overview` returns the P&L summary +
+metrics + equity curve in one call; `GET /api/dashboard/trades?limit=200`
+serves the trade log separately so the table can page independently of
+the summary cards later.
+
+**Live push: Redis pub/sub, separate from the Trigger→Executor queue.**
+The existing `quantforge:trigger-events` list (Phase 6) is a work queue —
+FIFO, one consumer, no fan-out. Telling a WebSocket "something changed"
+needs the opposite shape: fan-out to every connected browser, no
+persistence, fire-and-forget. `app/queue.py` adds a second primitive for
+that: `DASHBOARD_UPDATES_CHANNEL` and `publish_update(event, client=)`
+(PUBLISH, matching the existing `client=` injectable-Redis convention).
+`executor_service/executor.py`'s `process_event` calls it right after
+committing a trade + snapshot, wrapped in try/except — a Redis publish
+failure must never lose or roll back a trade that already happened, so
+it's logged and swallowed, not raised. This has to be pub/sub rather than
+an in-process event (e.g. an `asyncio.Event` or a Python callback) because
+Executor and the FastAPI process serving the WebSocket are two different
+OS processes in the always-on deployment mode (see "Loop vs. single-hit"
+above) — pub/sub is the one mechanism that works identically whether
+Executor runs as its own persistent loop process or in-process via
+`POST /trigger/run-once`.
+
+`GET /api/ws/dashboard` (`app/api/dashboard.py`) subscribes to that
+channel and forwards every message verbatim to the browser. It runs two
+concurrent tasks — one forwarding pubsub messages, one watching for the
+client to disconnect — via `asyncio.wait(..., return_when=FIRST_COMPLETED)`,
+so a client that closes the socket doesn't leave the forwarding task
+blocked forever on `pubsub` reads; both tasks are cancelled and the
+pubsub connection unsubscribed/closed in a `finally`.
+
+**Frontend: the WebSocket is a "something changed" signal, not incremental
+state.** `routes/Dashboard.tsx` could parse each pushed event and patch
+P&L/Sharpe/etc. in place, but that means duplicating
+`app/dashboard/metrics.py`'s math in TypeScript and keeping the two in
+sync forever. Instead every WS message (auto-reconnecting every 3s on
+drop) just triggers a full re-fetch of `GET /api/dashboard/overview` +
+`GET /api/dashboard/trades` — the backend stays the single source of
+truth for every number on the page, and the extra round trip is
+unnoticeable since fills land at most a few times a minute (Trigger/
+Executor's own poll interval). `MetricCard` (previously a private
+component inside `Backtest.tsx`) was promoted to
+`components/MetricCard.tsx` so Backtest and Dashboard share one
+implementation instead of two copies drifting apart.
+
+**Testing.** `test_dashboard_metrics.py` covers the pure-Python
+Sharpe/drawdown/win-rate functions directly (11 tests: empty history,
+zero-variance Sharpe, known-value drawdown, FIFO/out-of-order win-rate
+pairing). `test_api_dashboard.py` covers the two REST endpoints plus the
+WebSocket — the WebSocket tests use hand-rolled `_FakePubSub`/`_FakeRedis`
+doubles rather than real `fakeredis`, because two separately-constructed
+`fakeredis.aioredis.FakeRedis()` instances were confirmed (via a hung
+test) not to share pub/sub state with each other, which real fakeredis
+would need across `TestClient`'s background thread. `test_executor_service.py`
+gained a test that the publish actually fires with the right payload shape
+(real single shared `fakeredis` instance, `pubsub.listen()`) and a test
+that a broken Redis publish doesn't stop the trade from committing.
+
 ## Free-tier notes
 
 - Render's free web services sleep on idle — bad for a service that needs to poll continuously. Either run Trigger/Executor as a persistent loop on an Oracle Cloud Always-Free VM (`python -m app.trigger_service` / `python -m app.executor_service`), or replace the loop with a scheduled GitHub Action / external cron (e.g. cron-job.org) hitting `POST /trigger/run-once` — both modes are implemented as of Phase 6, see above.
@@ -587,5 +669,5 @@ request, not just at `/activate` time. `resolve_strategy` ignores
 - [x] 5 — Backtesting Engine
 - [x] 6 — Risk Manager, Trigger & Executor
 - [x] 7 — ML/RL strategy plugin
-- [ ] 8 — Dashboard
+- [x] 8 — Dashboard
 - [ ] 9 — Deployment & polish

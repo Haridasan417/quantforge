@@ -22,7 +22,14 @@ import redis.asyncio as redis
 
 from app.config import settings
 
+# Phase 8: a pub/sub channel (not a list) -- unlike the FIFO queue
+# above, a dashboard update has no "consumer" to hand off to and no
+# reason to persist if nobody's listening right this second. PUBLISH
+# to a channel with zero subscribers is a normal no-op, not an error
+# -- exactly "nobody's watching the dashboard right now", which is
+# fine.
 EVENT_QUEUE_KEY = "quantforge:trigger-events"
+DASHBOARD_UPDATES_CHANNEL = "quantforge:dashboard-updates"
 
 _redis_client: redis.Redis | None = None
 
@@ -53,3 +60,15 @@ async def pop_event(*, client: redis.Redis | None = None) -> dict[str, Any] | No
 
 async def queue_length(*, client: redis.Redis | None = None) -> int:
     return await (client or get_redis()).llen(EVENT_QUEUE_KEY)
+
+
+async def publish_update(event: dict[str, Any], *, client: redis.Redis | None = None) -> None:
+    """Producer side (Executor's `process_event`, Phase 8): broadcast one
+    `{"type": "execution", "trade": {...}, "portfolio": {...}}` event to
+    every dashboard currently subscribed (`GET /api/ws/dashboard`).
+    Fire-and-forget by design -- callers wrap this so a Redis hiccup
+    never blocks or fails an already-committed trade, only the live
+    push is missed (the next `GET /api/dashboard/*` request on refresh
+    still reflects it, since Postgres is the durable record either
+    way)."""
+    await (client or get_redis()).publish(DASHBOARD_UPDATES_CHANNEL, json.dumps(event, default=str))
