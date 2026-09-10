@@ -24,3 +24,11 @@ smartapi-python==1.5.5
 pyotp==2.10.0
 logzero==1.7.0
 websocket-client==1.9.2
+
+# RL Strategy (Phase 7 part B) -- loads a stable-baselines3 checkpoint
+# for live/backtest inference (RLStrategy). Same versions as
+# ml/requirements.txt (used for training); stable-baselines3 pinned to
+# 2.5.0+, not 2.4.x, since 2.4.x pins numpy<2.0 (see ml/requirements.txt's
+# comment) which would conflict with numpy==2.2.6 above.
+gymnasium==1.0.0
+stable-baselines3==2.5.0

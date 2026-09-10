@@ -478,6 +478,78 @@ session. Phase 7 part B (loading a downloaded checkpoint into a live
 `RLStrategy` for backtest/execution) is unblocked once a `.zip`/`.json`
 pair lands in `ml/checkpoints/`.
 
+**Post-part-A fix:** the notebook's install cell originally ran
+`pip install -r backend/requirements.txt` in full inside Colab. In
+practice this triggered two separate numpy-downgrade conflicts against
+Colab's preinstalled numpy>=2 stack (torch/jax/opencv/etc.): first
+`nsepy` (unmaintained, and never actually imported by anything this
+notebook touches — it's a lazy fallback inside `data_service/sources.py`,
+only reached if the yfinance fetch fails), then `stable-baselines3==2.4.0`
+itself, which pins `numpy<2.0`. Fixed by (1) replacing the install cell
+with a minimal curated list (`pandas-ta`, `sqlalchemy`, `yfinance`,
+`pydantic`, `pydantic-settings`, pinned to the same versions as
+`backend/requirements.txt`) instead of the full requirements file, and
+(2) bumping `stable-baselines3` to `2.5.0` (relaxed to `numpy<3.0`) in
+both `ml/requirements.txt` and `backend/requirements.txt` — see those
+files' comments. Neither change touches Colab's own numpy/pandas.
+
+## RLStrategy (Phase 7 part B)
+
+`backend/app/strategy_engine/strategies/rl_strategy.py`, registered as
+`"rl"`: loads a stable-baselines3 `DQN` checkpoint (`ml/checkpoints/<checkpoint_name>.zip`,
+configured via `RLConfig.checkpoint_name` — no default, since which
+checkpoint to run is never a sensible thing to guess) and calls the
+*same* `build_observation` feature function part A's `TradingEnv`
+trains against, so there's no train/serve skew. The model is loaded
+lazily on first `generate_signal` call, not in `__init__`, so just
+constructing an `RLStrategy` (e.g. to read `config_schema()` for the
+Strategy Builder UI) never touches disk or requires a checkpoint to
+exist yet; a missing checkpoint raises a clear `FileNotFoundError`
+naming the expected path and pointing at the notebook, rather than a
+bare stable-baselines3 stack trace.
+
+Warm-up is checked *before* the model is touched at all: `build_observation`
+returning `None` (not enough history yet) is a `HOLD`, same contract as
+every other strategy, and means a deployment configured with a
+checkpoint that hasn't landed yet doesn't raise on every bar during
+that warm-up window — only once real inference is actually attempted.
+The model's raw action (0=HOLD/1=BUY/2=SELL) is mapped through the same
+already-long/already-flat guard `MACrossoverStrategy` uses (BUY only
+fires while flat, SELL only fires while long), so a policy re-asserting
+BUY every bar while already long is a `HOLD`, not a repeated re-entry.
+
+**Why this module doesn't import `ml/envs/trading_env.py`:** this
+project's dependency direction is `ml/` → `backend/` (the training env
+and notebook import backend code), never the reverse — `ml/` is a
+training-time/Colab-only concern, not part of what ships as the
+backend service. The action encoding (`0=HOLD, 1=BUY, 2=SELL`) is
+therefore duplicated as a small module-level constant in
+`rl_strategy.py` rather than imported; a comment on it flags that it
+must stay in sync with `ml/envs/trading_env.py`'s `HOLD`/`BUY`/`SELL`
+if that encoding ever changes, since it's the encoding whatever
+checkpoint gets loaded was actually trained against.
+
+**Why stable-baselines3/gymnasium are imported lazily inside
+`_load_model`, not at module level:** `strategy_engine/strategies/__init__.py`
+imports every strategy module purely to run its `@register_strategy`
+decorator at app startup — every other built-in strategy has no heavy
+dependency, and `RLStrategy` shouldn't force a torch import cost onto
+the whole registry just by existing, only when an `RLStrategy` is
+actually invoked.
+
+**Testing** (`backend/tests/test_rl_strategy.py`): `ml/checkpoints/*.zip`
+is gitignored (trained artifacts, not source — see `.gitignore`) and
+never present in CI, so the tests train their own tiny, fast DQN
+checkpoint in a `module`-scoped fixture against a minimal synthetic
+Gymnasium env matching `RLStrategy`'s expected observation/action
+shapes (`Box(OBSERVATION_SIZE,)`/`Discrete(3)`) — not
+`ml/envs/trading_env.py`, consistent with this module never importing
+`ml/` — just enough to exercise a real save/load round trip. Position-
+aware signal gating (BUY-while-long, SELL-while-flat, HOLD) is tested
+by monkeypatching the *loaded* model's `.predict` to force a specific
+action, isolating the gating logic from what the tiny (untrained-to-any-
+real-skill) policy actually happens to output.
+
 ## Free-tier notes
 
 - Render's free web services sleep on idle — bad for a service that needs to poll continuously. Either run Trigger/Executor as a persistent loop on an Oracle Cloud Always-Free VM (`python -m app.trigger_service` / `python -m app.executor_service`), or replace the loop with a scheduled GitHub Action / external cron (e.g. cron-job.org) hitting `POST /trigger/run-once` — both modes are implemented as of Phase 6, see above.
@@ -494,6 +566,6 @@ pair lands in `ml/checkpoints/`.
 - [x] 4 — Strategy Builder UI
 - [x] 5 — Backtesting Engine
 - [x] 6 — Risk Manager, Trigger & Executor
-- [ ] 7 — ML/RL strategy plugin (part A shipped: features.py, WalkForwardStrategy, TradingEnv, training notebook — see above; part B, `RLStrategy` wired to a trained checkpoint, is pending the checkpoint coming back from Colab)
+- [x] 7 — ML/RL strategy plugin
 - [ ] 8 — Dashboard
 - [ ] 9 — Deployment & polish
