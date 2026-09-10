@@ -4,11 +4,13 @@ const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000
 
 export class ApiError extends Error {
   status: number;
+  detail?: unknown;
 
-  constructor(status: number, message: string) {
+  constructor(status: number, message: string, detail?: unknown) {
     super(message);
     this.name = "ApiError";
     this.status = status;
+    this.detail = detail;
   }
 }
 
@@ -19,7 +21,27 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   });
 
   if (!res.ok) {
-    throw new ApiError(res.status, `${init?.method ?? "GET"} ${path} failed: ${res.status}`);
+    // FastAPI error bodies are `{"detail": "..."}` (validation) or
+    // `{"detail": [...]}` (pydantic field errors) — surface that instead
+    // of a bare status code wherever the caller just shows err.message,
+    // e.g. "No action node has any condition wired into it" rather than
+    // "POST /api/strategies/custom failed: 422".
+    let detail: unknown;
+    try {
+      detail = await res.json();
+    } catch {
+      // body wasn't JSON (or was empty) — fall through with detail unset
+    }
+    const detailMessage =
+      detail && typeof detail === "object" && "detail" in detail
+        ? String((detail as { detail: unknown }).detail)
+        : undefined;
+
+    throw new ApiError(
+      res.status,
+      detailMessage ?? `${init?.method ?? "GET"} ${path} failed: ${res.status}`,
+      detail,
+    );
   }
 
   return res.json() as Promise<T>;

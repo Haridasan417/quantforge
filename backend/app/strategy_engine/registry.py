@@ -38,3 +38,44 @@ def list_strategies() -> dict[str, type[Strategy]]:
     """A copy of the registry — safe for callers to iterate without
     risking a mutation of the real thing."""
     return dict(_REGISTRY)
+
+
+# ---------------------------------------------------------------------------
+# Instance registry
+#
+# The class registry above is for strategies with one fixed set of
+# tunable parameters per *class* (MACrossoverStrategy, RSIThresholdStrategy
+# — registered once, at import time, via the decorator). A saved Strategy
+# Builder graph (Phase 4) doesn't fit that: each save produces its own
+# nodes/edges, so there's one already-configured *instance* per saved
+# graph, not a class shared across them. This is a separate registry so
+# `list_strategies()` (schemas/config forms) and callers that need an
+# actual runnable strategy (backtest, execution) stay decoupled.
+# ---------------------------------------------------------------------------
+
+_INSTANCES: dict[str, Strategy] = {}
+
+
+def register_strategy_instance(name: str, instance: Strategy) -> None:
+    """Register an already-configured Strategy *instance* under `name`
+    (e.g. `f"graph:{strategy_id}"`) — used for strategies built at
+    runtime rather than declared as a class. Overwrites any existing
+    instance under the same name, so re-saving/re-loading a graph is
+    just calling this again."""
+    _INSTANCES[name] = instance
+
+
+def unregister_strategy_instance(name: str) -> None:
+    _INSTANCES.pop(name, None)
+
+
+def get_strategy_instance(name: str) -> Strategy:
+    try:
+        return _INSTANCES[name]
+    except KeyError:
+        raise KeyError(f"No strategy instance registered under {name!r}") from None
+
+
+def list_strategy_instances() -> dict[str, Strategy]:
+    """A copy of the instance registry — see `list_strategies()`."""
+    return dict(_INSTANCES)

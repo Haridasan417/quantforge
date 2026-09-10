@@ -133,6 +133,59 @@ Series/DataFrame instead, so warm-up windows behave the same
 (`pd.isna(...)`-checkable) everywhere these functions are used,
 including `/api/candles`.
 
+## Strategy Builder + GraphStrategy
+
+`frontend/src/routes/StrategyBuilder.tsx`: a React Flow canvas with two
+node types (`components/strategy-builder/ConditionNode.tsx`,
+`ActionNode.tsx`). A ConditionNode is indicator + comparator +
+threshold (e.g. "RSI < 30"); its indicator dropdown and per-indicator
+params (e.g. RSI's `length`) are populated from `GET
+/api/strategies/indicators`, not hard-coded — the same
+`data_service.indicators` implementations the backend actually
+evaluates against, so the UI can't drift out of sync with what it can
+compute. An ActionNode is just BUY/SELL. Wiring one or more
+ConditionNodes into one ActionNode is an AND-chain: every condition
+feeding that action must hold for it to fire — enforced by
+`isValidConnection` only allowing condition→action edges, and by the
+backend interpreter treating multiple incoming edges as AND, never OR.
+"Save Strategy" strips the UI-only parts of each node's `data` (the
+indicator catalog, onChange callbacks) down to the plain
+id/type/position/data shape the backend expects, and POSTs it to
+`POST /api/strategies/custom`.
+
+`backend/app/strategy_engine/graph_strategy.py`: `GraphStrategy`
+implements the same `Strategy` interface as any built-in, but
+interprets a saved graph at `generate_signal` time instead of running
+fixed logic — walk the graph, evaluate every ConditionNode wired into
+each ActionNode against the current row, fire that action if they're
+all true (and the position makes it a sensible action: don't BUY if
+already long, don't SELL if flat). Unlike `MACrossoverStrategy`/
+`RSIThresholdStrategy`, it's never `@register_strategy`-decorated —
+one graph strategy exists per *saved graph*, each with its own
+nodes/edges, not a fixed set of class-level parameters. Instead,
+`POST /api/strategies/custom` builds one `GraphStrategy` instance per
+saved row and calls the registry's new
+`register_strategy_instance(f"graph:{id}", instance)` — a separate
+instance registry alongside the existing class registry
+(`list_strategy_instances()`/`get_strategy_instance()` in
+`registry.py`) — so it shows up in `GET /api/strategies` (and will be
+resolvable by name for the backtest engine and executor) exactly like
+a built-in, without either needing to know it came from the visual
+builder. The instance registry lives in process memory, so
+`app/main.py`'s lifespan handler re-registers every saved `type="graph"`
+row from Postgres on startup — otherwise a saved strategy would
+silently vanish the moment the API process restarted.
+
+A save is validated (`GraphStrategy.validate_graph()`) before it's
+persisted — unknown indicator, bad comparator, a dangling edge, an
+action node nothing feeds into, no action node at all — so a broken
+graph gets a 422 with a real reason immediately, not a mysterious
+failure discovered later inside a backtest. `api/client.ts`'s `request()`
+was extended to surface a FastAPI error body's `detail` as
+`ApiError.message` (previously just "POST ... failed: 422") specifically
+so this validation message reaches the Strategy Builder's error banner
+verbatim.
+
 ## Free-tier notes
 
 - Render's free web services sleep on idle — bad for a service that needs to poll continuously. Either run Trigger/Executor as a persistent loop on an Oracle Cloud Always-Free VM, or replace the loop with a scheduled GitHub Action / external cron (e.g. cron-job.org) hitting a `/trigger/run-once` endpoint.
@@ -146,7 +199,7 @@ including `/api/candles`.
 - [x] 1 — Backend core + Data Service
 - [x] 2 — Frontend chart
 - [x] 3 — Strategy Engine core
-- [ ] 4 — Strategy Builder UI
+- [x] 4 — Strategy Builder UI
 - [ ] 5 — Backtesting Engine
 - [ ] 6 — Risk Manager, Trigger & Executor
 - [ ] 7 — ML/RL strategy plugin
