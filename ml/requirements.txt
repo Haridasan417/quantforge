@@ -3,5 +3,13 @@
 # (Colab already ships a compatible torch; installing stable-baselines3
 # there does not force a reinstall) and here, for locally sanity-checking
 # the env with `cd ml && pytest`.
+#
+# stable-baselines3 pinned to 2.5.0+ (not 2.4.x) deliberately: 2.4.0/2.4.1
+# pin `numpy<2.0`, which forces pip to downgrade a fresh Colab runtime's
+# numpy from 2.x to 1.26.4 -- breaking numerous Colab-preinstalled
+# packages that require numpy>=2 (torch/jax/opencv/etc.) and conflicting
+# with pandas-ta's own numpy>=2.2.6 requirement. 2.5.0 relaxed this to
+# `numpy<3.0`, so Colab's existing numpy is left untouched. Still
+# compatible with gymnasium==1.0.0 (2.5.0 requires gymnasium<1.1.0).
 gymnasium==1.0.0
-stable-baselines3==2.4.0
+stable-baselines3==2.5.0
